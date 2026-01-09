@@ -5,6 +5,31 @@ import torch.nn.functional as F
 EPS = 1e-6
 
 
+class ReadinNetwork(nn.Module):
+    def __init__(
+            self, 
+            dim_observation: int, 
+            width: int = 128,
+            dim_shared: int = 64,
+            linear: bool = False,
+            dropout: float = 0.0
+    ):
+        super().__init__()
+
+        if linear:
+            self.net = nn.Linear(dim_observation, dim_shared)
+        else:
+            self.net = nn.Sequential(
+                nn.Linear(dim_observation, width),
+                nn.SiLU(),
+                nn.Dropout(dropout),
+                nn.Linear(width, dim_shared)
+                )
+
+    def forward(self, y):
+        return self.net(y)
+
+
 class LatentDynamicsEncoderDKF(nn.Module):
     def __init__(
             self,

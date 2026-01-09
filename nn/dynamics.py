@@ -11,26 +11,26 @@ class LoRAHypernet(nn.Module):
     """
     def __init__(
             self,
-            embedding_dim: int,
+            dim_embedding: int,
             layer_dims: list[tuple[int, int]],
             adapt_layers: set[int] | None = {0, 1},
             rank: int = 1,
-            hidden_dim: int = 256,
+            width: int = 256,
     ):
         super().__init__()
 
         self.rank = rank
         self.adapt_layers = set(range(len(layer_dims))) if adapt_layers is None else adapt_layers
 
-        self.net = nn.Sequential(nn.Linear(embedding_dim, hidden_dim),
+        self.net = nn.Sequential(nn.Linear(dim_embedding, width),
                                  nn.Tanh(),
-                                 nn.Linear(hidden_dim, hidden_dim),
+                                 nn.Linear(width, width),
                                  nn.Tanh())
         
         self.heads = nn.ModuleList()
 
         for dim_in, dim_out in layer_dims:
-            self.heads.append(nn.Linear(hidden_dim, rank * dim_in + rank * dim_out))
+            self.heads.append(nn.Linear(width, rank * dim_in + rank * dim_out))
         
     def set_adapt_layers(self, adapt_layers: set[int] | None):
         """Change which layers are adapted at runtime"""
@@ -70,12 +70,12 @@ class MlpDynamics(nn.Module):
             self,
             num_latents: int,
             hidden_layers: int = 2,
-            dim: int = 128,
+            width: int = 128,
             adapt_layers: set[int] | None = {0, 1}
             ):
         super().__init__()
 
-        dims = [num_latents] + hidden_layers * [dim] + [num_latents]
+        dims = [num_latents] + hidden_layers * [width] + [num_latents]
 
         self.adapt_layers = adapt_layers
 
