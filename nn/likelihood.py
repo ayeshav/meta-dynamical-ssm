@@ -14,7 +14,7 @@ class Likelihood(nn.Module):
             num_observations: int,
             linear: bool = True,
             dim_hidden: int = 128
-        ):
+    ):
         super().__init__()
 
         if linear:

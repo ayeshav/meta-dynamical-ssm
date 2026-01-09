@@ -7,7 +7,7 @@ EPS = 1e-6
 
 class LoRAHypernet(nn.Module):
     """
-    Hypernetwork that outputs low-rank updates for specified weights
+    Hypernetwork that outputs low-rank weight updates
     """
     def __init__(
             self,
@@ -16,7 +16,7 @@ class LoRAHypernet(nn.Module):
             adapt_layers: set[int] | None = {0, 1},
             rank: int = 1,
             hidden_dim: int = 256,
-            ):
+    ):
         super().__init__()
 
         self.rank = rank
@@ -98,7 +98,6 @@ class MlpDynamics(nn.Module):
 
         variance = F.softplus(self.log_variance) + EPS
         return z_next, variance
-
 
 
 
