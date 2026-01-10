@@ -18,7 +18,7 @@ def masked_posterior_sampler(mu_q, var_q, dynamics, deltas = None, n_samples = 1
     for t in range(1, T):
         if t_mask[0, t] == 0:
             z_prev = z_s[t - 1]
-            z_t = dynamics.sample_forward(z_prev, deltas=deltas)[0]
+            z_t = dynamics(z_prev, deltas=deltas)[0]
         else:
             z_t = reparametrize(mu_q[:, t:t+1], var_q[:, t:t+1], n_samples=n_samples)
         z_s.append(z_t)

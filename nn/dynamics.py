@@ -23,6 +23,8 @@ class LoRAHypernet(nn.Module):
 
         self.rank = rank
         self.common_init_condition = common_init_condition
+
+        self.layer_dims = layer_dims
         self.adapt_layers = set(range(len(layer_dims))) if adapt_layers is None else adapt_layers
 
         self.net = nn.Sequential(nn.Linear(dim_embedding, width),
@@ -72,7 +74,7 @@ class LoRAHypernet(nn.Module):
             delta = torch.einsum('bij, bkj -> bik', [u, vh]).squeeze()
 
             deltas[f"linear_{i}"] = delta
-            delta_norm += torch.norm(delta, (-1, -2))
+            delta_norm += torch.norm(delta, dim=(-1, -2))
 
         return deltas, (mu_init, variance_init), delta_norm
 
@@ -89,6 +91,7 @@ class MlpDynamics(nn.Module):
 
         dims = [num_latents] + hidden_layers * [width] + [num_latents]
 
+        self.num_latents = num_latents
         self.adapt_layers = {0, 1} if adapt_layers is None else adapt_layers
 
         self.fc_layers = nn.ModuleList(nn.Linear(dims[i], dims[i+1]) for i in range(len(dims) - 1))
@@ -98,18 +101,18 @@ class MlpDynamics(nn.Module):
 
     def forward(self, z_prev, deltas = None):
 
-        z_next = z_prev
+        z = z_prev
         for i, linear in enumerate(self.fc_layers):
-            z_next = linear(z_next)
+            base = linear(z)
 
             if deltas is not None and i in self.adapt_layers:
-                z_next = z_next + z_next @ deltas[f"linear_{i}"]
+                delta = deltas[f"linear_{i}"]
+                base = base + z @ delta
 
-            if i < len(self.fc_layers) - 1:
-                z_next = self.act(z_next)
+            z = self.act(base) if i < len(self.fc_layers) - 1 else base
 
         variance = F.softplus(self.log_variance) + EPS
-        return z_next, variance
+        return z, variance
 
 
 

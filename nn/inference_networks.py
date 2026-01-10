@@ -59,7 +59,7 @@ class LatentDynamicsEncoderDKF(nn.Module):
         h, _ = self.net(y_cat)
         out = self.out(h)
 
-        mu, log_variance = torch.split(out, [self.num_latents, -1], -1)
+        mu, log_variance = out.chunk(2, dim=-1)
         variance = F.softplus(log_variance) + EPS
 
         return mu, variance
@@ -94,7 +94,7 @@ class LatentDynamicsEncoderDVBF(nn.Module):
 
         out = self.out(torch.flip(h, dims=[1]))
 
-        mu, log_variance = torch.split(out, [self.num_latents, -1], -1)
+        mu, log_variance = out.chunk(2, dim=-1)
         variance = F.softplus(log_variance) + EPS
 
         return mu, variance
@@ -117,14 +117,14 @@ class EmbeddingEncoder(nn.Module):
 
         self.net = nn.GRU(input_size=dim_in, hidden_size=dim_hidden, batch_first=True)
         
-        self.out = nn.Linear(2 * dim_hidden, 2 * dim_embedding)
+        self.out = nn.Linear(dim_hidden, 2 * dim_embedding)
 
     def forward(self, y):
         
         h, _ = self.net(y)
-        out = self.out(h)
+        out = self.out(h[:, -1].unsqueeze(1))
 
-        mu, log_variance = torch.split(out, [self.dim_embedding, -1], -1)
+        mu, log_variance = out.chunk(2, dim=-1)
         variance = F.softplus(log_variance) + EPS
 
         if self.pool:

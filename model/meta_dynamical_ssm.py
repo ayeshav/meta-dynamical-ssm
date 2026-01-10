@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils import *
+from model.utils import *
 
 EPS = 1e-6
 
@@ -19,6 +19,7 @@ class MetaDynamicalSSM(nn.Module):
                  dynamics,
                  likelihood,
                  alpha: float = 0.1,
+                 concat_embedding: bool = True, 
                  common_init_condition: bool = True):
         super().__init__()
 
@@ -30,6 +31,7 @@ class MetaDynamicalSSM(nn.Module):
         self.likelihood = likelihood
 
         self.alpha = alpha
+        self.concat_embedding = concat_embedding
         self.common_init_condition = common_init_condition
 
         if common_init_condition:
@@ -54,10 +56,11 @@ class MetaDynamicalSSM(nn.Module):
         y_bar = self.readin_net[ds](y_ds)  # [b,T,dim_shared]
 
         # 2) task/dataset embedding
-        e = self.embedding_encoder(y_bar)  # [1, dim_embedding] if pool = True
+        mu_e, variance_e = self.embedding_encoder(y_bar)
+        e = reparametrize(mu_e, variance_e)
 
         # 3) hypernet -> dynamics parameters (low-rank deltas etc.)
-        deltas, (mu_0, var_0), delta_norm = self.hypernet(e)
+        deltas, (mu_0, var_0), delta_norm = self.hypernetwork(e)
 
         if self.common_init_condition:
             mu_0 = self.mu_0.expand(y_ds.size(0), -1)
@@ -76,10 +79,10 @@ class MetaDynamicalSSM(nn.Module):
         )  # z: [b,T,Dz]
 
         # 6) likelihood loss
-        recon = self.likelihood[ds](y_ds, z)  # scalar tensor
+        recon = self.likelihood[ds](z, y_ds)  # scalar tensor
 
         # 7) dynamics KL: q(z_t) vs p(z_t|z_{t-1})
-        mu_p, var_p_t = self.dynamics.sample_forward(z[..., :-1, :], deltas)
+        mu_p, var_p_t = self.dynamics(z[..., :-1, :], deltas)
 
         kl_t = gaussian_kl(
             mu_q[..., 1:, :], var_q[..., 1:, :],
@@ -90,7 +93,7 @@ class MetaDynamicalSSM(nn.Module):
         if t_mask is not None:
             kl_t = kl_t * t_mask[:, 1:, :]
 
-        kl = torch.sum(kl, (-1, -2))
+        kl = torch.sum(kl_t, (-1, -2))
         kl_0 = gaussian_kl(mu_q[..., 0, :], var_q[..., 0, :], mu_0, var_0).sum(-1).mean()
 
         loss = torch.mean(recon + kl) + kl_0 + self.alpha * delta_norm
