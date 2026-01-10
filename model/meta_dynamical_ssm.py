@@ -105,34 +105,31 @@ class MetaDynamicalSSM(nn.Module):
 
     
     def forward(self,
-                batch: Dict[str, torch.Tensor],
+                batch: Dict[int, Dict[str, torch.Tensor]],
                 n_samples: int = 1,
                 p_mask: float = 0.0,
                 return_outputs: bool = False):
         
-        y = batch['y']
-        dataset_id = batch.get("y_id", None)
 
-        losses_by_ds: Dict[int, torch.Tensor] = {}
-        outputs_by_ds: Optional[Dict[int, Dict[str, torch.Tensor]]] = {} if return_outputs else None
+        losses_by_ds = {}
+        outputs_by_ds = {} if return_outputs else None
 
-        ds_ids = dataset_id
         total_loss = 0.0
 
-        for ds in ds_ids.unique().tolist():
-            idx = (ds_ids == ds).nonzero(as_tuple=True)[0]
-            y_ds = y.index_select(0, idx)
+        for ds, b in batch.items():
+            y = b["y"]
+            u = b.get("u", None)
 
             loss_ds, outs = self._run_one_dataset(
-                int(ds), y_ds,
+                ds, y, u_ds = u,
                 n_samples=n_samples,
                 p_mask=p_mask,
                 return_outputs=return_outputs
             )
-            losses_by_ds[int(ds)] = loss_ds
+            losses_by_ds[ds] = loss_ds
             total_loss = total_loss + loss_ds
             if return_outputs:
-                outputs_by_ds[int(ds)] = outs
+                outputs_by_ds[ds] = outs
 
         out = {"loss": total_loss,
                "losses_by_dataset": losses_by_ds}
