@@ -1,4 +1,4 @@
-from .dynamics import MlpDynamics
+from .dynamics import MlpDynamics, LoRAHypernet
 from .inference_networks import (LatentDynamicsEncoderDKF, 
                                  LatentDynamicsEncoderDVBF, 
                                  EmbeddingEncoder,

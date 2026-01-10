@@ -12,8 +12,9 @@ class LoRAHypernet(nn.Module):
     def __init__(
             self,
             dim_embedding: int,
+            num_latents: int,
             layer_dims: list[tuple[int, int]],
-            adapt_layers: set[int] | None = {0, 1},
+            adapt_layers: set[int] | None,
             rank: int = 1,
             width: int = 256,
     ):
@@ -31,6 +32,8 @@ class LoRAHypernet(nn.Module):
 
         for dim_in, dim_out in layer_dims:
             self.heads.append(nn.Linear(width, rank * dim_in + rank * dim_out))
+
+        self.init_head = nn.Linear(width, 2 * num_latents)
         
     def set_adapt_layers(self, adapt_layers: set[int] | None):
         """Change which layers are adapted at runtime"""
@@ -42,6 +45,10 @@ class LoRAHypernet(nn.Module):
         B = e.shape[0]
 
         out = self.net(e)
+
+        init_vec = self.init_head(out)
+        mu_init, log_variance_init = init_vec.chunk(2, dim=-1)  # each [B, num_latents]
+        variance_init = F.softplus(log_variance_init) + 1e-6
 
         deltas = {}
         delta_norm = 0
@@ -62,22 +69,22 @@ class LoRAHypernet(nn.Module):
             deltas[f"linear_{i}"] = delta
             delta_norm += torch.norm(delta, (-1, -2))
 
-        return deltas, delta_norm
+        return deltas, (mu_init, variance_init), delta_norm
 
 
 class MlpDynamics(nn.Module):
     def __init__(
             self,
             num_latents: int,
+            adapt_layers: set[int] | None,
             hidden_layers: int = 2,
             width: int = 128,
-            adapt_layers: set[int] | None = {0, 1}
             ):
         super().__init__()
 
         dims = [num_latents] + hidden_layers * [width] + [num_latents]
 
-        self.adapt_layers = adapt_layers
+        self.adapt_layers = {0, 1} if adapt_layers is None else adapt_layers
 
         self.fc_layers = nn.ModuleList(nn.Linear(dims[i], dims[i+1]) for i in range(len(dims) - 1))
         
