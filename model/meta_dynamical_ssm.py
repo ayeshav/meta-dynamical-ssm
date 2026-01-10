@@ -2,15 +2,11 @@ from typing import Dict, Tuple, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from utils import *
 
-from nn import (ReadinNetwork,
-                MlpDynamics,
-                LoRAHypernet,
-                GaussianLikelihood,
-                LatentDynamicsEncoderDKF,
-                EmbeddingEncoder)
+EPS = 1e-6
 
 
 class MetaDynamicalSSM(nn.Module):
@@ -22,7 +18,8 @@ class MetaDynamicalSSM(nn.Module):
                  hypernetwork,
                  dynamics,
                  likelihood,
-                 alpha = 0.1):
+                 alpha: float = 0.1,
+                 common_init_condition: bool = True):
         super().__init__()
 
         self.readin_net = readin_net
@@ -33,8 +30,12 @@ class MetaDynamicalSSM(nn.Module):
         self.likelihood = likelihood
 
         self.alpha = alpha
+        self.common_init_condition = common_init_condition
 
-    
+        if common_init_condition:
+            self.mu_0 = nn.Parameter(torch.ones(1, dynamics.num_latents))
+            self.log_variance_0 = nn.Parameter(torch.ones(1, dynamics.num_latents))
+
     def _run_one_dataset(
         self,
         ds: int,
@@ -56,7 +57,11 @@ class MetaDynamicalSSM(nn.Module):
         e = self.embedding_encoder(y_bar)  # [1, dim_embedding] if pool = True
 
         # 3) hypernet -> dynamics parameters (low-rank deltas etc.)
-        deltas, (mu_0, var_0), delta_norm = self.hypernet(e) 
+        deltas, (mu_0, var_0), delta_norm = self.hypernet(e)
+
+        if self.common_init_condition:
+            mu_0 = self.mu_0.expand(y_ds.size(0), -1)
+            var_0 = F.softplus(self.log_variance_0).expand(y_ds.size(0), -1) + EPS
 
         # 4) posterior params from encoder
         mu_q, var_q = self.latent_encoder(y_bar, e if self.concat_embedding else None)
@@ -74,7 +79,7 @@ class MetaDynamicalSSM(nn.Module):
         recon = self.likelihood[ds](y_ds, z)  # scalar tensor
 
         # 7) dynamics KL: q(z_t) vs p(z_t|z_{t-1})
-        _, mu_p, var_p_t = self.dynamics.sample_forward(z[..., :-1, :], deltas)
+        mu_p, var_p_t = self.dynamics.sample_forward(z[..., :-1, :], deltas)
 
         kl_t = gaussian_kl(
             mu_q[..., 1:, :], var_q[..., 1:, :],
@@ -88,7 +93,7 @@ class MetaDynamicalSSM(nn.Module):
         kl = torch.sum(kl, (-1, -2))
         kl_0 = gaussian_kl(mu_q[..., 0, :], var_q[..., 0, :], mu_0, var_0).sum(-1).mean()
 
-        loss = recon + kl + self.alpha * delta_norm
+        loss = torch.mean(recon + kl) + kl_0 + self.alpha * delta_norm
 
         outs = {}
         if return_outputs:

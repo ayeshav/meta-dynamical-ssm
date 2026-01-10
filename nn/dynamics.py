@@ -17,10 +17,12 @@ class LoRAHypernet(nn.Module):
             adapt_layers: set[int] | None,
             rank: int = 1,
             width: int = 256,
+            common_init_condition: bool = True
     ):
         super().__init__()
 
         self.rank = rank
+        self.common_init_condition = common_init_condition
         self.adapt_layers = set(range(len(layer_dims))) if adapt_layers is None else adapt_layers
 
         self.net = nn.Sequential(nn.Linear(dim_embedding, width),
@@ -46,9 +48,12 @@ class LoRAHypernet(nn.Module):
 
         out = self.net(e)
 
-        init_vec = self.init_head(out)
-        mu_init, log_variance_init = init_vec.chunk(2, dim=-1)  # each [B, num_latents]
-        variance_init = F.softplus(log_variance_init) + 1e-6
+        if not self.common_init_condition:
+            init_vec = self.init_head(out)
+            mu_init, log_variance_init = init_vec.chunk(2, dim=-1)  # each [B, num_latents]
+            variance_init = F.softplus(log_variance_init) + 1e-6
+        else:
+            mu_init, variance_init = None, None
 
         deltas = {}
         delta_norm = 0
