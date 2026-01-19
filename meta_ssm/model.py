@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from meta_ssm.utils.utils import *
+from meta_ssm.utils import *
 
 EPS = 1e-6
 
