@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.utils import *
+from meta_ssm.utils.utils import *
 
 EPS = 1e-6
 
@@ -56,8 +56,8 @@ class MetaDynamicalSSM(nn.Module):
         y_bar = self.readin_net[ds](y_ds)  # [b,T,dim_shared]
 
         # 2) task/dataset embedding
-        mu_e, variance_e = self.embedding_encoder(y_bar)
-        e = reparametrize(mu_e, variance_e)
+        mu_e, var_e = self.embedding_encoder(y_bar)
+        e = reparametrize(mu_e, var_e)
 
         # 3) hypernet -> dynamics parameters (low-rank deltas etc.)
         deltas, (mu_0, var_0), delta_norm = self.hypernetwork(e)
@@ -96,7 +96,16 @@ class MetaDynamicalSSM(nn.Module):
         kl = torch.sum(kl_t, (-1, -2))
         kl_0 = gaussian_kl(mu_q[..., 0, :], var_q[..., 0, :], mu_0, var_0).sum(-1).mean()
 
-        loss = torch.mean(recon + kl) + kl_0 + self.alpha * delta_norm
+
+        # Prior is N(0, I)
+        mu_e_0 = torch.zeros_like(mu_e)
+        var_e_0 = torch.ones_like(var_e)
+
+        kl_e = gaussian_kl(mu_e, var_e, mu_e_0, var_e_0)     # shape [1, E] (or [B, E])
+        kl_e = kl_e.sum(dim=-1).mean()
+
+        elbo = torch.mean(recon + kl) + kl_0 + kl_e
+        loss = - elbo + self.alpha * delta_norm 
 
         outs = {}
         if return_outputs:
