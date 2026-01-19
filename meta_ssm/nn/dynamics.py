@@ -13,7 +13,8 @@ class LoRAHypernet(nn.Module):
             self,
             dim_embedding: int,
             num_latents: int,
-            layer_dims: list[tuple[int, int]],
+            width_dynamics: int,
+            hidden_layers: int,
             adapt_layers: set[int] | None,
             rank: int = 1,
             width: int = 256,
@@ -24,8 +25,9 @@ class LoRAHypernet(nn.Module):
         self.rank = rank
         self.common_init_condition = common_init_condition
 
-        self.layer_dims = layer_dims
-        self.adapt_layers = set(range(len(layer_dims))) if adapt_layers is None else adapt_layers
+        self.layer_dims = self._get_layer_dims(num_latents, width_dynamics, hidden_layers)
+
+        self.adapt_layers = set(range(len(self.layer_dims))) if adapt_layers is None else adapt_layers
 
         self.net = nn.Sequential(nn.Linear(dim_embedding, width),
                                  nn.Tanh(),
@@ -34,10 +36,14 @@ class LoRAHypernet(nn.Module):
         
         self.heads = nn.ModuleList()
 
-        for dim_in, dim_out in layer_dims:
+        for dim_in, dim_out in self.layer_dims:
             self.heads.append(nn.Linear(width, rank * dim_in + rank * dim_out))
 
         self.init_head = nn.Linear(width, 2 * num_latents)
+
+    def _get_layer_dims(self, num_latents, width, hidden_layers):
+        dims = [num_latents] + [width] * hidden_layers + [num_latents]
+        return [(dims[i], dims[i + 1]) for i in range(len(dims) - 1)]
         
     def set_adapt_layers(self, adapt_layers: set[int] | None):
         """Change which layers are adapted at runtime"""

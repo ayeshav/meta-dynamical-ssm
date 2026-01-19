@@ -8,7 +8,7 @@ EPS = 1e-6
 class ReadinNetwork(nn.Module):
     def __init__(
             self, 
-            dim_observation: int, 
+            num_observations: int, 
             width: int = 128,
             dim_shared: int = 64,
             linear: bool = False,
@@ -17,10 +17,10 @@ class ReadinNetwork(nn.Module):
         super().__init__()
 
         if linear:
-            self.net = nn.Linear(dim_observation, dim_shared)
+            self.net = nn.Linear(num_observations, dim_shared)
         else:
             self.net = nn.Sequential(
-                nn.Linear(dim_observation, width),
+                nn.Linear(num_observations, width),
                 nn.SiLU(),
                 nn.Dropout(dropout),
                 nn.Linear(width, dim_shared)
@@ -34,7 +34,8 @@ class LatentDynamicsEncoderDKF(nn.Module):
     def __init__(
             self,
             num_latents: int,
-            dim_in: int, 
+            dim_shared: int, 
+            dim_embedding: int = 0,
             dim_hidden: int = 128,
 
     ):
@@ -42,7 +43,7 @@ class LatentDynamicsEncoderDKF(nn.Module):
 
         self.num_latents = num_latents
 
-        self.net = nn.GRU(input_size=dim_in,
+        self.net = nn.GRU(input_size=dim_shared + dim_embedding,
                           hidden_size=dim_hidden,
                           bidirectional=True,
                           batch_first=True)
@@ -69,7 +70,8 @@ class LatentDynamicsEncoderDVBF(nn.Module):
     def __init__(
             self,
             num_latents: int,
-            dim_in: int, 
+            dim_shared: int, 
+            dim_embedding: int = 0,
             dim_hidden: int = 128,
 
     ):
@@ -77,7 +79,7 @@ class LatentDynamicsEncoderDVBF(nn.Module):
 
         self.num_latents = num_latents
 
-        self.net = nn.GRU(input_size=dim_in,
+        self.net = nn.GRU(input_size=dim_shared + dim_embedding,
                           hidden_size=dim_hidden,
                           batch_first=True)
         
@@ -105,7 +107,7 @@ class EmbeddingEncoder(nn.Module):
             self,
             dim_embedding: int,
             dim_in: int,
-            t_max: int,
+            t_max: int | None = None,
             randomize: bool = True,
             dim_hidden: int = 128,
             pool: bool = True,

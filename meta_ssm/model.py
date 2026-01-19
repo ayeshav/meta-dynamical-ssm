@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from meta_ssm.utils import *
+from .utils import *
 
 EPS = 1e-6
 
@@ -12,23 +12,22 @@ EPS = 1e-6
 class MetaDynamicalSSM(nn.Module):
     def __init__(self,
                  *, 
-                 readin_net,
+                 adapters,
                  latent_encoder,
                  embedding_encoder,
                  hypernetwork,
                  dynamics,
-                 likelihood,
                  alpha: float = 0.1,
                  concat_embedding: bool = True, 
                  common_init_condition: bool = True):
         super().__init__()
 
-        self.readin_net = readin_net
+        self.adapters = adapters
+
         self.latent_encoder = latent_encoder
         self.embedding_encoder = embedding_encoder
         self.hypernetwork = hypernetwork
         self.dynamics = dynamics
-        self.likelihood = likelihood
 
         self.alpha = alpha
         self.concat_embedding = concat_embedding
@@ -53,7 +52,7 @@ class MetaDynamicalSSM(nn.Module):
         """
 
         # 1) readin to shared dimension
-        y_bar = self.readin_net[ds](y_ds)  # [b,T,dim_shared]
+        y_bar = self.adapters.readin_net[ds](y_ds)  # [b,T,dim_shared]
 
         # 2) task/dataset embedding
         mu_e, var_e = self.embedding_encoder(y_bar)
@@ -79,7 +78,7 @@ class MetaDynamicalSSM(nn.Module):
         )  # z: [b,T,Dz]
 
         # 6) likelihood loss
-        recon = self.likelihood[ds](z, y_ds)  # scalar tensor
+        recon = self.adapters.likelihood[ds](z, y_ds)  # scalar tensor
 
         # 7) dynamics KL: q(z_t) vs p(z_t|z_{t-1})
         mu_p, var_p_t = self.dynamics(z[..., :-1, :], deltas)

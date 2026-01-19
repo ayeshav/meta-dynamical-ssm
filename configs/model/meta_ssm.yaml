@@ -1,0 +1,65 @@
+# conf/model/meta_ssm.yaml
+hparams:
+  num_latents: 4
+  width: 32
+  hidden_layers: 2
+  dim_shared: 16
+  dim_embedding: 8
+  rank: 1
+  dropout: 0.0
+  linear_readin: false
+  adapt_layers: [0, 1]
+
+model:
+  _target_: meta_ssm.model.MetaDynamicalSSM
+
+  alpha: 0.1
+  concat_embedding: true
+  common_init_condition: true
+
+  adapters:
+    _target_: meta_ssm.nn.Adapters
+
+    readin_modules:
+        _target_: meta_ssm.nn.ReadinNetwork
+        _partial_: true
+        width: ${hparams.width}
+        dim_shared: ${hparams.dim_shared}
+        linear: true
+        dropout: ${hparams.dropout}
+
+    likelihood_modules:
+        _target_: meta_ssm.nn.GaussianLikelihood
+        _partial_: true
+        num_latents: ${hparams.num_latents}
+
+  latent_encoder:
+    _target_: meta_ssm.nn.LatentDynamicsEncoderDKF
+    num_latents: ${hparams.num_latents}
+    dim_shared: ${hparams.dim_shared}
+    dim_embedding: ${hparams.dim_embedding}
+    dim_hidden: ${hparams.width}
+
+  embedding_encoder:
+    _target_: meta_ssm.nn.EmbeddingEncoder
+    dim_embedding: ${hparams.dim_embedding}
+    dim_in: ${hparams.dim_shared}
+    dim_hidden: ${hparams.width}
+
+  hypernetwork:
+    _target_: meta_ssm.nn.LoRAHypernet
+    dim_embedding: ${hparams.dim_embedding}
+    num_latents: ${hparams.num_latents}
+    width_dynamics: ${hparams.width}
+    hidden_layers: ${hparams.hidden_layers}
+    adapt_layers: ${hparams.adapt_layers}
+    rank: ${hparams.rank}
+    width: ${hparams.width}
+
+  dynamics:
+    _target_: meta_ssm.nn.MlpDynamics
+    num_latents: ${hparams.num_latents}
+    hidden_layers: ${hparams.hidden_layers}
+    width: ${hparams.width}
+    adapt_layers: ${hparams.adapt_layers}
+
