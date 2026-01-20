@@ -1,7 +1,7 @@
 import torch
 
 def reparametrize(mu, var, n_samples=1):
-    eps = torch.randn((n_samples,) + mu.shape)
+    eps = torch.randn((n_samples,) + mu.shape, device=mu.device)
     return (mu + torch.sqrt(var) * eps).squeeze(0)
 
 def gaussian_kl(mu_q, var_q, mu_p, var_p) -> torch.Tensor:
@@ -11,7 +11,7 @@ def gaussian_kl(mu_q, var_q, mu_p, var_p) -> torch.Tensor:
 def masked_posterior_sampler(mu_q, var_q, dynamics, deltas = None, n_samples = 1, p_mask = 0.2):
     T = mu_q.size(1)
 
-    t_mask = torch.bernoulli((1 - p_mask) * torch.ones((1, T, 1)))
+    t_mask = torch.bernoulli((1 - p_mask) * torch.ones((1, T, 1), device=mu_q.device))
 
     z0 = reparametrize(mu_q[:, :1], var_q[:, :1], n_samples=n_samples)
     z_s = [z0]

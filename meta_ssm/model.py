@@ -52,7 +52,7 @@ class MetaDynamicalSSM(nn.Module):
         """
 
         # 1) readin to shared dimension
-        y_bar = self.adapters.readin_net[ds](y_ds)  # [b,T,dim_shared]
+        y_bar = self.adapters.readin[ds](y_ds)  # [b,T,dim_shared]
 
         # 2) task/dataset embedding
         mu_e, var_e = self.embedding_encoder(y_bar)
@@ -78,7 +78,7 @@ class MetaDynamicalSSM(nn.Module):
         )  # z: [b,T,Dz]
 
         # 6) likelihood loss
-        recon = self.adapters.likelihood[ds](z, y_ds)  # scalar tensor
+        ll = self.adapters.likelihood[ds](z, y_ds)  # scalar tensor
 
         # 7) dynamics KL: q(z_t) vs p(z_t|z_{t-1})
         mu_p, var_p_t = self.dynamics(z[..., :-1, :], deltas)
@@ -95,7 +95,6 @@ class MetaDynamicalSSM(nn.Module):
         kl = torch.sum(kl_t, (-1, -2))
         kl_0 = gaussian_kl(mu_q[..., 0, :], var_q[..., 0, :], mu_0, var_0).sum(-1).mean()
 
-
         # Prior is N(0, I)
         mu_e_0 = torch.zeros_like(mu_e)
         var_e_0 = torch.ones_like(var_e)
@@ -103,7 +102,7 @@ class MetaDynamicalSSM(nn.Module):
         kl_e = gaussian_kl(mu_e, var_e, mu_e_0, var_e_0)     # shape [1, E] (or [B, E])
         kl_e = kl_e.sum(dim=-1).mean()
 
-        elbo = torch.mean(recon + kl) + kl_0 + kl_e
+        elbo = torch.mean(ll - kl) - kl_0 - kl_e
         loss = - elbo + self.alpha * delta_norm 
 
         outs = {}
