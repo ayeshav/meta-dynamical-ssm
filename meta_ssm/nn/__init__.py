@@ -3,5 +3,6 @@ from .adapter import Adapters
 from .inference_networks import (LatentDynamicsEncoderDKF, 
                                  LatentDynamicsEncoderDVBF, 
                                  EmbeddingEncoder,
-                                 ReadinNetwork)
-from .likelihood import GaussianLikelihood, PoissonLikelihood
+                                 ReadinNetwork,
+                                 ReadinShared)
+from .likelihood import GaussianLikelihood, PoissonLikelihood, ReadoutShared

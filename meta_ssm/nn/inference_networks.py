@@ -9,25 +9,34 @@ class ReadinNetwork(nn.Module):
     def __init__(
             self, 
             num_observations: int, 
-            width: int = 128,
-            dim_shared: int = 64,
+            dim_y_bar: int = 64,
             linear: bool = False,
-            dropout: float = 0.0
     ):
         super().__init__()
 
         if linear:
-            self.net = nn.Linear(num_observations, dim_shared)
+            self.net = nn.Linear(num_observations, dim_y_bar)
         else:
             self.net = nn.Sequential(
-                nn.Linear(num_observations, width),
+                nn.Linear(num_observations, dim_y_bar),
                 nn.SiLU(),
-                nn.Dropout(dropout),
-                nn.Linear(width, dim_shared)
                 )
 
     def forward(self, y):
         return self.net(y)
+    
+
+class ReadinShared(nn.Module):
+    def __init__(self, dim_y_bar: int, dim_shared: int, affine_ln: bool = True):
+        super().__init__()
+        self.net = nn.Linear(dim_y_bar, dim_shared)
+        self.ln = nn.LayerNorm(dim_shared, elementwise_affine=affine_ln)
+
+        nn.init.orthogonal_(self.net.weight)
+        nn.init.zeros_(self.net.bias)
+
+    def forward(self, h):     
+        return self.ln(self.net(h))
 
 
 class LatentDynamicsEncoderDKF(nn.Module):
@@ -55,7 +64,7 @@ class LatentDynamicsEncoderDKF(nn.Module):
         y_cat = y
         if e is not None:
             e = e.expand(y.size(0), y.size(1), -1)
-            y_cat = torch.cat([y, e], -1)
+            y_cat = torch.cat([y, e.detach()], -1)
 
         h, _ = self.net(y_cat)
         out = self.out(h)

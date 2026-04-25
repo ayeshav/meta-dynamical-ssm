@@ -17,6 +17,8 @@ class MetaDynamicalSSM(nn.Module):
                  embedding_encoder,
                  hypernetwork,
                  dynamics,
+                 shared_readin,
+                 shared_readout,
                  alpha: float = 0.1,
                  concat_embedding: bool = True, 
                  common_init_condition: bool = True):
@@ -28,6 +30,9 @@ class MetaDynamicalSSM(nn.Module):
         self.embedding_encoder = embedding_encoder
         self.hypernetwork = hypernetwork
         self.dynamics = dynamics
+
+        self.shared_readin = shared_readin
+        self.shared_readout = shared_readout
 
         self.alpha = alpha
         self.concat_embedding = concat_embedding
@@ -54,6 +59,8 @@ class MetaDynamicalSSM(nn.Module):
         # 1) readin to shared dimension
         y_bar = self.adapters.readin[ds](y_ds)  # [b,T,dim_shared]
 
+        y_bar = self.shared_readin(y_bar)
+
         # 2) task/dataset embedding
         mu_e, var_e = self.embedding_encoder(y_bar)
         e = reparametrize(mu_e, var_e)
@@ -76,6 +83,8 @@ class MetaDynamicalSSM(nn.Module):
             p_mask=p_mask,
             deltas=deltas,
         )  # z: [b,T,Dz]
+
+        z = self.shared_readout(z) 
 
         # 6) likelihood loss
         ll = self.adapters.likelihood[ds](z, y_ds)  # scalar tensor

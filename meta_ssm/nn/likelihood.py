@@ -7,6 +7,19 @@ from torch.distributions import Normal, Poisson
 EPS = 1e-6
 
 
+class ReadoutShared(nn.Module):
+    def __init__(self, dim_y_bar: int, dim_shared: int, width: int = 128, dropout: float = 0.0, affine_ln: bool = True):
+        super().__init__()
+        self.net = nn.Linear(dim_y_bar, dim_shared)
+        self.ln = nn.LayerNorm(dim_shared, elementwise_affine=affine_ln)
+
+        nn.init.orthogonal_(self.net.weight)
+        nn.init.zeros_(self.net.bias)
+
+    def forward(self, h):     # h: [B,T,dim_readin]
+        return self.net(h)
+
+
 class Likelihood(nn.Module):
     def __init__(
             self,
