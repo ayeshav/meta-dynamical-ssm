@@ -44,7 +44,7 @@ class MetaDynamicalSSM(nn.Module):
 
     def _run_one_dataset(
         self,
-        ds: int,
+        ds: str,
         y_ds: torch.Tensor,                  # [b,T,Dobs]
         *,
         u_ds: Optional[torch.Tensor] = None, # [b,T,U] or [b,T,?]
