@@ -94,6 +94,31 @@ def diagnostics(model, data) -> dict:
 
 
 @torch.no_grad()
+def collect_summary(model, data) -> dict:
+    """Lightweight per-dataset state for snapshots (no trajectories)."""
+    model.eval()
+    keys = list(data.observations.keys())
+    mu_e_all, delta_norms_all = [], []
+    for key in keys:
+        y_obs = data.observations[key]
+        y_bar = model.adapters.readin[key](y_obs)
+        y_bar = model.shared_readin(y_bar)
+        mu_e, _ = model.embedding_encoder(y_bar)
+        deltas, _, _ = model.hypernetwork(mu_e)
+        mu_e_all.append(mu_e.flatten().tolist())
+        delta_norms_all.append(
+            [float(torch.linalg.norm(d).item()) for _, d in sorted(deltas.items())]
+        )
+    model.train()
+    return {
+        "keys": keys,
+        "omegas": [data.omegas[k] for k in keys],
+        "mu_e": mu_e_all,
+        "delta_norms": delta_norms_all,
+    }
+
+
+@torch.no_grad()
 def collect_final(model, data) -> dict:
     """Per-dataset arrays for plotting."""
     model.eval()
@@ -247,6 +272,8 @@ def main():
     parser.add_argument("--seed", type=int, default=20260528)
     parser.add_argument("--log-every", type=int, default=20)
     parser.add_argument("--eval-every", type=int, default=100)
+    parser.add_argument("--snapshot-every", type=int, default=0,
+                        help="Save state_dict + per-dataset mu_e + delta norms every K steps (0 = off)")
     parser.add_argument("--out-dir", type=Path, default=Path("results"))
     args = parser.parse_args()
 
@@ -308,6 +335,22 @@ def main():
             diag = diagnostics(model, data)
             metrics[-1].update(diag)
             print(f"{step:>6} {loss_value:>10.2f} {diag['r2_median']:>7.3f} {diag['spearman']:>7.3f}")
+
+        if args.snapshot_every > 0 and (step % args.snapshot_every == 0 or step == args.steps):
+            snap_dir = out_dir / "snapshots"
+            snap_dir.mkdir(exist_ok=True)
+            diag_snap = diagnostics(model, data)
+            summary = collect_summary(model, data)
+            torch.save(
+                {
+                    "step": step,
+                    "loss": loss_value,
+                    "diag": diag_snap,
+                    "summary": summary,
+                    "state_dict": model.state_dict(),
+                },
+                snap_dir / f"step_{step:05d}.pt",
+            )
 
     elapsed = time.time() - t0
     print(f"\nelapsed: {elapsed:.1f}s")

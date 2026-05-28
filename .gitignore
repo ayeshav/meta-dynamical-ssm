@@ -140,3 +140,7 @@ pip-selfcheck.json
 
 .DS_Store
 *.pt
+
+# Local Claude Code session state, plans, and GCP run artifacts
+.claude/
+gcp_runs/
