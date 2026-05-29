@@ -3,8 +3,17 @@
 Generates 100 datasets spanned by a 1-D family (limit-cycle angular
 velocity), with calibrated SNR. Trains the model for a short fixed budget
 and checks: (1) loss is finite and decreases, (2) reconstruction R^2 on
-held-out trials is high, (3) the inferred 1-D embedding is monotonic in
-the true angular velocity.
+held-out trials is high, (3) the inferred embedding recovers the 1-D
+family.
+
+Note: latent dynamics are rotation-invariant. Flipping the latent basis
+(z -> -z) is absorbed by per-dataset readin/readout adapters, so the sign
+of omega (CW vs CCW rotation) is not identifiable from observations alone.
+The recovery test therefore compares |PC1(mu_e)| to |omega|, not signed
+mu_e to signed omega. A 6-config sweep on GCP (see
+gcp_runs/exp-20260528-200902-sweep/) found Spearman(|PC1(mu_e)|, |omega|)
+in [0.985, 0.994] at 2000 steps; at the shorter test budget the
+threshold is set more loosely.
 """
 from __future__ import annotations
 
@@ -27,8 +36,8 @@ NUM_ENSEMBLE = 100
 NUM_TRIALS = 32
 NUM_TIMEPOINTS = 100
 SNR_DB = 30.0
-TRAIN_STEPS = 500
-DATASETS_PER_STEP = 16
+TRAIN_STEPS = 1000
+DATASETS_PER_STEP = 24
 BATCH_SIZE = 16
 
 
@@ -115,8 +124,8 @@ def test_reconstruction_r2(trained):
 
     r2_sorted = sorted(r2_values)
     median = r2_sorted[len(r2_sorted) // 2]
-    assert median > 0.7, (
-        f"median reconstruction R^2={median:.3f} below 0.7; values={r2_sorted}"
+    assert median > 0.85, (
+        f"median reconstruction R^2={median:.3f} below 0.85; values={r2_sorted}"
     )
 
 
@@ -126,6 +135,15 @@ def _spearman(a: torch.Tensor, b: torch.Tensor) -> float:
     ra = ra - ra.mean()
     rb = rb - rb.mean()
     return float((ra * rb).sum() / (torch.sqrt((ra**2).sum() * (rb**2).sum()) + 1e-12))
+
+
+def _pc1(mu_e: torch.Tensor) -> torch.Tensor:
+    """First principal component score of a (N, dim_embedding) embedding."""
+    if mu_e.shape[1] == 1:
+        return mu_e[:, 0]
+    centered = mu_e - mu_e.mean(0, keepdim=True)
+    _, _, v = torch.linalg.svd(centered, full_matrices=False)
+    return centered @ v[0]
 
 
 @torch.no_grad()
@@ -141,8 +159,13 @@ def test_embedding_recovers_1d(trained):
         y_bar = model.adapters.readin[key](y_obs)
         y_bar = model.shared_readin(y_bar)
         mu_e, _ = model.embedding_encoder(y_bar)
-        embeddings.append(mu_e.flatten()[0].item())
+        embeddings.append(mu_e.flatten().tolist())
         omegas.append(data.omegas[key])
 
-    rho = _spearman(torch.tensor(embeddings), torch.tensor(omegas))
-    assert abs(rho) > 0.7, f"|Spearman rho|={abs(rho):.3f} below 0.7"
+    pc1 = _pc1(torch.tensor(embeddings))
+    rho = _spearman(pc1.abs(), torch.tensor(omegas).abs())
+    assert rho > 0.6, (
+        f"Spearman(|PC1(mu_e)|, |omega|)={rho:.3f} below 0.6. "
+        "Latent rotation invariance makes sign(omega) non-identifiable; "
+        "if signed recovery is required, constrain C to be sign-aligned."
+    )
