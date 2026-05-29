@@ -49,6 +49,42 @@ Post a 1-3 line TL;DR to Slack `#context-dependent-dynamics` after each
 meaningful plan or milestone. Use `slack_send_message`. Format: what
 changed / what's next.
 
+## External dependencies
+
+`external/neurofisherSNR` (git submodule, catniplab/neurofisherSNR) is
+used for SNR-matched Poisson observation generation. The library is
+numpy-based; the wrapper in `examples/ensemble_limit_cycle/synthetic.py`
+moves between torch and numpy at the boundary. Two performance traps to
+remember when calling its `gen_poisson_observations`:
+
+1. **Pre-seed C.** Pass `C=...` instead of leaving it `None`, otherwise
+   the lib's `initialize_C` runs a 15000-iteration coherence
+   optimization that never converges for `d_latent=2` (max coherence of
+   unit vectors on a 1-D circle is 1).
+2. **Subsample latents.** `SNR_bound_instantaneous` iterates
+   `np.linalg.inv` over every row of `x`; pass ~60 representative rows,
+   not the full (B * T) flatten.
+
+With these two fixes, generation is sub-second per dataset even at
+`n_neurons = 2500`.
+
+## Compute / GCP notes
+
+- L4 GPU images: use `pytorch-2-9-cu129-ubuntu-2204-nvidia-580` from
+  `deeplearning-platform-release`. The older `common-cu123-debian-12`
+  family is gone. Image needs >= 100 GB boot disk.
+- GPU stockouts in `europe-west1-b`/`-c`/`europe-west4` are common; the
+  cheapest reliable fallback we found for L4 was `europe-west2-b`.
+- For this model size (~1-3 M params, ensemble of 100 small datasets
+  serialized through the dataset loop in
+  `MetaDynamicalSSM.forward`), L4 gives only ~2x speedup vs the same
+  VM's 4 vCPUs. The bottleneck is the serial per-dataset loop, not the
+  per-dataset matmul. If we ever need a real GPU win, batching across
+  datasets via padding would be the lever.
+- PyTorch on GCE Deep Learning images is preinstalled at
+  `/usr/bin/python3`; `pip install scipy matplotlib` is needed for
+  neurofisherSNR + plotting. `numpy` is preinstalled.
+
 ## Architecture
 
 The whole forward pass lives in `meta_ssm/model.py::MetaDynamicalSSM._run_one_dataset`.
