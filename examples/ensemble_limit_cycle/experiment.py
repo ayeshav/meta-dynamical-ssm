@@ -30,8 +30,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.builders import build_model
-from tests.synthetic import generate_ensemble, sample_batch
+from examples.ensemble_limit_cycle.builders import build_model
+from examples.ensemble_limit_cycle.synthetic import (
+    generate_ensemble,
+    generate_ensemble_poisson,
+    sample_batch,
+)
 
 
 def spearman(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -50,14 +54,36 @@ def r2(y_pred: torch.Tensor, y_true: torch.Tensor) -> float:
 
 @torch.no_grad()
 def encode_dataset(model, ds: str, y_obs: torch.Tensor):
+    """Return (mu_e, mu_q, clean_prediction).
+
+    `clean_prediction` is the mean of the likelihood (Gaussian: linear
+    readout; Poisson: exp(log-rate)). Matches the noise-free target used
+    in `diagnostics`.
+    """
+    from meta_ssm.nn import PoissonLikelihood
     y_bar = model.adapters.readin[ds](y_obs)
     y_bar = model.shared_readin(y_bar)
     mu_e, _ = model.embedding_encoder(y_bar)
     e = mu_e if model.concat_embedding else None
     mu_q, _ = model.latent_encoder(y_bar, e)
     z = model.shared_readout(mu_q)
-    y_hat = model.adapters.likelihood[ds].readout(z)
+    lik = model.adapters.likelihood[ds]
+    raw = lik.readout(z)
+    if isinstance(lik, PoissonLikelihood):
+        y_hat = torch.exp(raw.clamp(max=lik.log_rate_clamp))
+    else:
+        y_hat = raw
     return mu_e, mu_q, y_hat
+
+
+def _clean_target(data, key: str) -> torch.Tensor:
+    """Ground-truth noise-free target for the given dataset.
+
+    Poisson: true rate lambda = exp(C z + b). Gaussian: y_clean = z C.
+    """
+    if hasattr(data, "rates"):
+        return data.rates[key]
+    return data.latents[key] @ data.observation_matrices[key]
 
 
 @torch.no_grad()
@@ -67,9 +93,7 @@ def diagnostics(model, data) -> dict:
     embeddings, omegas, r2_values = [], [], []
     for key in keys:
         y_obs = data.observations[key]
-        x_true = data.latents[key]
-        C = data.observation_matrices[key]
-        y_clean = x_true @ C
+        y_clean = _clean_target(data, key)
         mu_e, _, y_hat = encode_dataset(model, key, y_obs)
         embeddings.append(mu_e.flatten().tolist())
         omegas.append(data.omegas[key])
@@ -137,8 +161,7 @@ def collect_final(model, data) -> dict:
     for key in keys:
         y_obs = data.observations[key]
         x_true = data.latents[key]
-        C = data.observation_matrices[key]
-        y_clean = x_true @ C
+        y_clean = _clean_target(data, key)
         mu_e, mu_q, y_hat = encode_dataset(model, key, y_obs)
         deltas, _, _ = model.hypernetwork(mu_e)
         out["mu_e"].append(mu_e.flatten().tolist())
@@ -275,6 +298,18 @@ def main():
     parser.add_argument("--snapshot-every", type=int, default=0,
                         help="Save state_dict + per-dataset mu_e + delta norms every K steps (0 = off)")
     parser.add_argument("--out-dir", type=Path, default=Path("results"))
+    parser.add_argument("--likelihood", choices=("gaussian", "poisson"),
+                        default="gaussian")
+    parser.add_argument("--n-neurons-min", type=int, default=500,
+                        help="Poisson only: min neurons per dataset")
+    parser.add_argument("--n-neurons-max", type=int, default=1500,
+                        help="Poisson only: max neurons per dataset")
+    parser.add_argument("--mean-rate", type=float, default=0.05,
+                        help="Poisson only: target mean firing rate per bin")
+    parser.add_argument("--max-rate", type=float, default=0.5,
+                        help="Poisson only: target peak firing rate per bin")
+    parser.add_argument("--device", default="cpu",
+                        help="cpu, cuda, or cuda:N")
     args = parser.parse_args()
 
     out_dir = args.out_dir
@@ -286,24 +321,49 @@ def main():
     config = vars(args).copy()
     config["out_dir"] = str(config["out_dir"])
 
+    device = torch.device(args.device)
+
     t0 = time.time()
-    data = generate_ensemble(
-        num_ensemble=args.n,
-        num_trials=args.num_trials,
-        num_timepoints=args.num_timepoints,
-        snr_db=args.snr_db,
-        seed=args.seed,
-    )
-    print(f"data: N={len(data.observations)}, snr_db={data.snr_db}")
+    if args.likelihood == "gaussian":
+        data = generate_ensemble(
+            num_ensemble=args.n,
+            num_trials=args.num_trials,
+            num_timepoints=args.num_timepoints,
+            snr_db=args.snr_db,
+            seed=args.seed,
+            device=device,
+        )
+        print(f"data: N={len(data.observations)} (gaussian), snr_db={data.snr_db}")
+    else:
+        data = generate_ensemble_poisson(
+            num_ensemble=args.n,
+            num_trials=args.num_trials,
+            num_timepoints=args.num_timepoints,
+            n_neurons_range=(args.n_neurons_min, args.n_neurons_max),
+            target_mean_rate=args.mean_rate,
+            target_max_rate=args.max_rate,
+            target_snr_db=args.snr_db,
+            seed=args.seed,
+            device=device,
+        )
+        snrs = list(data.realized_snrs.values())  # type: ignore[attr-defined]
+        print(f"data: N={len(data.observations)} (poisson), target_snr_db={data.snr_db}, "
+              f"realized SNR mean={sum(snrs)/len(snrs):.2f} dB, "
+              f"min={min(snrs):.2f}, max={max(snrs):.2f}")
     print(f"omegas: {min(data.omegas.values()):+.2f} .. {max(data.omegas.values()):+.2f}")
     print(f"obs_dims: {min(data.observation_dims.values())} .. {max(data.observation_dims.values())}")
 
-    model = build_model(data.observation_dims, dim_embedding=args.dim_emb, alpha=args.alpha)
+    model = build_model(
+        data.observation_dims,
+        dim_embedding=args.dim_emb,
+        alpha=args.alpha,
+        likelihood=args.likelihood,
+    ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"model: {n_params:,} parameters")
+    print(f"model: {n_params:,} parameters on {device}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    batch_gen = torch.Generator(device="cpu")
+    batch_gen = torch.Generator(device=device)
     batch_gen.manual_seed(args.seed + 1)
 
     keys = list(data.observations.keys())

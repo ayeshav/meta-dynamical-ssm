@@ -24,12 +24,16 @@ from pathlib import Path
 import pytest
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.builders import build_model
-from tests.synthetic import EnsembleData, generate_ensemble, sample_batch
+from examples.ensemble_limit_cycle.builders import build_model
+from examples.ensemble_limit_cycle.synthetic import (
+    EnsembleData,
+    generate_ensemble,
+    sample_batch,
+)
 
 SEED = 20260528
 NUM_ENSEMBLE = 100

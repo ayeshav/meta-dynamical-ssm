@@ -11,7 +11,7 @@ from pathlib import Path
 
 import torch.nn as nn
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -23,6 +23,7 @@ from meta_ssm.nn import (  # noqa: E402
     LatentDynamicsEncoderDKF,
     LoRAHypernet,
     MlpDynamics,
+    PoissonLikelihood,
     ReadinNetwork,
     ReadinShared,
 )
@@ -43,13 +44,21 @@ def build_model(
     concat_embedding: bool = True,
     common_init_condition: bool = True,
     linear_readin: bool = False,
+    likelihood: str = "gaussian",
 ) -> MetaDynamicalSSM:
     adapt_set = set(adapt_layers)
+
+    if likelihood == "gaussian":
+        likelihood_modules = partial(GaussianLikelihood, num_latents=num_latents)
+    elif likelihood == "poisson":
+        likelihood_modules = partial(PoissonLikelihood, num_latents=num_latents)
+    else:
+        raise ValueError(f"unknown likelihood: {likelihood!r}")
 
     adapters = Adapters(
         dim_observations=observation_dims,
         readin_modules=partial(ReadinNetwork, dim_y_bar=dim_y_bar, linear=linear_readin),
-        likelihood_modules=partial(GaussianLikelihood, num_latents=num_latents),
+        likelihood_modules=likelihood_modules,
     )
 
     return MetaDynamicalSSM(

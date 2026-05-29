@@ -68,18 +68,27 @@ class GaussianLikelihood(Likelihood):
 
     
 class PoissonLikelihood(Likelihood):
+    """Log-linear Poisson: lambda = exp(C z + b), matching the generative model.
+
+    `self.readout` is `nn.Linear(num_latents, num_observations)`, which
+    learns both the loading matrix C and the per-neuron bias b. The
+    log-rate is clamped before exp for numerical stability.
+    """
+
     def __init__(
             self,
             num_latents : int,
             num_observations: int,
             linear: bool = True,
-            dim_hidden: int = 128
+            dim_hidden: int = 128,
+            log_rate_clamp: float = 8.0,
     ):
         super().__init__(num_latents, num_observations, linear, dim_hidden)
+        self.log_rate_clamp = log_rate_clamp
 
     def forward(self, z, y):
-        log_rates = self.get_mean_output(z)
-        rates = F.softplus(log_rates) + EPS
+        log_rates = self.get_mean_output(z).clamp(max=self.log_rate_clamp)
+        rates = torch.exp(log_rates) + EPS
 
         log_likelihood = Poisson(rates).log_prob(y)
 
