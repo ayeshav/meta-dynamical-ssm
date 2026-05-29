@@ -14,22 +14,29 @@ COMMON=(
   --likelihood poisson
   --device cuda
   --n 100
-  --per-step 50
+  --per-step 25
   --batch 16
   --dim-emb 2
   --alpha 0.01
   --mean-rate 0.05
   --max-rate 0.5
-  --eval-every 100
-  --log-every 50
-  --snapshot-every 200
+  --snr-db 15
+  --n-neurons-min 800
+  --n-neurons-max 1200
+  --eval-every 200
+  --log-every 100
+  --snapshot-every 500
 )
 
-# (name, snr_db, n_min, n_max, steps)
+# Long-trial follow-up after the L4 collapse: at fixed (n ~ 1000, SNR 15
+# dB), test whether more spike data per trial (longer T) gives the
+# encoder enough signal to escape the mean-rate basin. Two configs:
+#   poisson_T1200: 12x longer than the L4 sweep (T_eff = 400)
+#   poisson_T2400: 24x longer (T_eff = 800)
+# (name, T, steps)
 CONFIGS=(
-  "poisson_snr20 20 1800 2400 2000"
-  "poisson_snr15 15  800 1200 2000"
-  "poisson_snr10 10  300  500 1000"
+  "poisson_T1200 1200 4000"
+  "poisson_T2400 2400 3000"
 )
 
 cd "$REPO_ROOT"
@@ -40,16 +47,15 @@ echo "[sweep] start $(date -Is)" | tee -a "$SWEEP_LOG"
 nvidia-smi | head -10 | tee -a "$SWEEP_LOG"
 
 for entry in "${CONFIGS[@]}"; do
-  read -r NAME SNR NMIN NMAX STEPS <<< "$entry"
+  read -r NAME TVAL STEPS <<< "$entry"
   OUT="$RESULTS_DIR/$NAME"
   LOG="$RESULTS_DIR/${NAME}.log"
   echo "" | tee -a "$SWEEP_LOG"
-  echo "===== [sweep] $NAME (snr=$SNR dB, n=[$NMIN,$NMAX], steps=$STEPS) $(date -Is) =====" | tee -a "$SWEEP_LOG"
+  echo "===== [sweep] $NAME (T=$TVAL, steps=$STEPS) $(date -Is) =====" | tee -a "$SWEEP_LOG"
   echo "$NAME" > "$RESULTS_DIR/current_config.txt"
   T0=$(date +%s)
   "$PYTHON" -u "$ENTRY" "${COMMON[@]}" \
-    --snr-db "$SNR" \
-    --n-neurons-min "$NMIN" --n-neurons-max "$NMAX" \
+    --num-timepoints "$TVAL" \
     --steps "$STEPS" \
     --out-dir "$OUT" 2>&1 | tee "$LOG"
   RC=${PIPESTATUS[0]}
