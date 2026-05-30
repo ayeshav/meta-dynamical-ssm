@@ -176,6 +176,44 @@ def collect_final(model, data) -> dict:
     return out
 
 
+def warm_start_dynamics(model, data, num_steps: int, lr: float, batch: int,
+                        rng: random.Random, log_every: int = 50) -> list[dict]:
+    """Pre-train `model.dynamics` (no deltas) to fit one-step prediction on the
+    ground-truth latent trajectories.
+
+    Pulls z_norm from `data.latents` (already shape [num_trials, T, d_latent]
+    per dataset), samples a random dataset + a random batch of trials per
+    step, and minimizes MSE between `dynamics(z[:, :-1])` and `z[:, 1:]`.
+
+    Only `model.dynamics` parameters are updated. The deltas pathway is not
+    used (deltas=None), so this just gives the *base* MlpDynamics a good
+    initialization in the limit-cycle basin.
+    """
+    opt = torch.optim.Adam(model.dynamics.parameters(), lr=lr)
+    keys = list(data.observations.keys())
+    history = []
+    print(f"\n[warm-start] {num_steps} steps, lr={lr}, batch={batch}, "
+          f"learning base MlpDynamics on true latents")
+    for step in range(1, num_steps + 1):
+        key = rng.choice(keys)
+        z = data.latents[key]
+        idx = torch.randint(z.shape[0], (min(batch, z.shape[0]),), device=z.device)
+        z_batch = z[idx]                       # [b, T, d_latent]
+        z_prev = z_batch[:, :-1]
+        z_next = z_batch[:, 1:]
+
+        opt.zero_grad(set_to_none=True)
+        z_pred, _ = model.dynamics(z_prev, deltas=None)
+        loss = ((z_pred - z_next) ** 2).mean()
+        loss.backward()
+        opt.step()
+
+        if step % log_every == 0 or step == num_steps:
+            history.append({"step": step, "loss": float(loss.detach().cpu())})
+            print(f"[warm-start] {step:>5} loss={loss.item():.4f}")
+    return history
+
+
 def make_plots(metrics, final, out_dir, dim_embedding):
     import matplotlib
 
@@ -310,6 +348,12 @@ def main():
                         help="Poisson only: target peak firing rate per bin")
     parser.add_argument("--device", default="cpu",
                         help="cpu, cuda, or cuda:N")
+    parser.add_argument("--warm-start-steps", type=int, default=0,
+                        help="Pre-train MlpDynamics on true (z_t -> z_{t+1}) "
+                             "for K gradient steps before main training.")
+    parser.add_argument("--warm-start-lr", type=float, default=1e-2)
+    parser.add_argument("--warm-start-batch", type=int, default=64,
+                        help="Trials per warm-start step (sampled per dataset).")
     args = parser.parse_args()
 
     out_dir = args.out_dir
@@ -362,13 +406,23 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"model: {n_params:,} parameters on {device}")
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    batch_gen = torch.Generator(device=device)
-    batch_gen.manual_seed(args.seed + 1)
-
     keys = list(data.observations.keys())
     per_step = args.per_step if args.per_step > 0 else len(keys)
     rng = random.Random(args.seed + 2)
+
+    warm_history = []
+    if args.warm_start_steps > 0:
+        warm_history = warm_start_dynamics(
+            model, data,
+            num_steps=args.warm_start_steps,
+            lr=args.warm_start_lr,
+            batch=args.warm_start_batch,
+            rng=random.Random(args.seed + 3),
+        )
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    batch_gen = torch.Generator(device=device)
+    batch_gen.manual_seed(args.seed + 1)
 
     metrics: list[dict] = []
     print(f"\n{'step':>6} {'loss':>10} {'r2_med':>7} {'rho':>7}")
@@ -419,10 +473,14 @@ def main():
 
     with (out_dir / "metrics.json").open("w") as f:
         json.dump(metrics, f, indent=2)
+    if warm_history:
+        with (out_dir / "warm_start.json").open("w") as f:
+            json.dump(warm_history, f, indent=2)
     summary = {
         "config": config,
         "elapsed_sec": elapsed,
         "n_params": n_params,
+        "warm_start_steps": args.warm_start_steps,
         "final": {k: v for k, v in metrics[-1].items() if isinstance(v, (int, float))},
     }
     with (out_dir / "summary.json").open("w") as f:

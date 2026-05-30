@@ -23,20 +23,23 @@ COMMON=(
   --snr-db 15
   --n-neurons-min 800
   --n-neurons-max 1200
+  --num-trials 320
+  --num-timepoints 400
+  --steps 4000
   --eval-every 200
   --log-every 100
   --snapshot-every 500
 )
 
-# Long-trial follow-up after the L4 collapse: at fixed (n ~ 1000, SNR 15
-# dB), test whether more spike data per trial (longer T) gives the
-# encoder enough signal to escape the mean-rate basin. Two configs:
-#   poisson_T1200: 12x longer than the L4 sweep (T_eff = 400)
-#   poisson_T2400: 24x longer (T_eff = 800)
-# (name, T, steps)
+# Warm-start + 10x trials follow-up. After longer trials (T=1200/2400)
+# didn't break the Poisson collapse, the next interventions are:
+#   - 10x more trials (32 -> 320) for denser velocity-field sampling
+#   - warm-start MlpDynamics on true latent trajectories for K steps
+# Two configs, control vs warm-start, to isolate the warm-start effect.
+# (name, warm_start_steps)
 CONFIGS=(
-  "poisson_T1200 1200 4000"
-  "poisson_T2400 2400 3000"
+  "poisson_warm   1000"
+  "poisson_nowarm    0"
 )
 
 cd "$REPO_ROOT"
@@ -47,16 +50,15 @@ echo "[sweep] start $(date -Is)" | tee -a "$SWEEP_LOG"
 nvidia-smi | head -10 | tee -a "$SWEEP_LOG"
 
 for entry in "${CONFIGS[@]}"; do
-  read -r NAME TVAL STEPS <<< "$entry"
+  read -r NAME WSTART <<< "$entry"
   OUT="$RESULTS_DIR/$NAME"
   LOG="$RESULTS_DIR/${NAME}.log"
   echo "" | tee -a "$SWEEP_LOG"
-  echo "===== [sweep] $NAME (T=$TVAL, steps=$STEPS) $(date -Is) =====" | tee -a "$SWEEP_LOG"
+  echo "===== [sweep] $NAME (warm_start=$WSTART) $(date -Is) =====" | tee -a "$SWEEP_LOG"
   echo "$NAME" > "$RESULTS_DIR/current_config.txt"
   T0=$(date +%s)
   "$PYTHON" -u "$ENTRY" "${COMMON[@]}" \
-    --num-timepoints "$TVAL" \
-    --steps "$STEPS" \
+    --warm-start-steps "$WSTART" \
     --out-dir "$OUT" 2>&1 | tee "$LOG"
   RC=${PIPESTATUS[0]}
   T1=$(date +%s)
