@@ -64,12 +64,13 @@ def final_emb(cfg_dir):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", type=Path,
-                    default=Path("gcp_runs/local_fixed_obs/results"))
+                    default=Path("gcp_runs/local_frozen_readout/results"))
+    ap.add_argument("--out-name", default="frozen_readout_summary.png")
     args = ap.parse_args()
 
     cfgs = [
-        ("poisson_fixed_C", "fixed C, b (shared across all datasets)", "tab:blue"),
-        ("poisson_per_ds_C", "per-dataset C, b (control)", "tab:orange"),
+        ("poisson_frozen_true", "frozen readout = true (C, b)", "tab:green"),
+        ("poisson_per_ds_C", "learnable per-dataset readout (control)", "tab:orange"),
     ]
 
     plt.rcParams.update({
@@ -109,31 +110,24 @@ def main():
         ax.set_xlabel(r"$\mu_e[0]$"); ax.set_ylabel(r"$\mu_e[1]$")
         ax.set_title(f"({name}) step {step}", fontsize=9, loc="left")
 
-    # bottom-right: rate-recovery summary text
+    # bottom-right: omega vs PC1 scatter for the frozen config (the recovery test)
     ax = axes[1, 2]
-    ax.axis("off")
-    lines = [
-        "Scale (N=30, T=200, n=400)",
-        "is much smaller than the A100",
-        "sweeps (N=100, T=400-2400,",
-        "n=800-1200).",
-        "",
-        "Both configs reach R^2 ~ 0.1.",
-        "Fixed C only marginally better.",
-        "",
-        "=> the per-dataset C is NOT the",
-        "cause of the collapse. The",
-        "collapse scales with the",
-        "n_obs * T product (likelihood",
-        "magnitude).",
-    ]
-    ax.text(0.0, 1.0, "\n".join(lines), transform=ax.transAxes,
-            va="top", ha="left", fontsize=9, family="monospace")
+    mu_e, om, step = final_emb(args.root / "poisson_frozen_true")
+    if mu_e is not None:
+        p1 = pc1(mu_e)
+        ax.scatter(om, p1, c=om, cmap="viridis", s=22, edgecolor="black", lw=0.2)
+        rho = spearman(p1, om)
+        ax.set_xlabel(r"true $\omega$"); ax.set_ylabel(r"$PC_1(\mu_e)$")
+        ax.set_title(f"(f, frozen) signed Spearman = {rho:+.3f}", fontsize=9, loc="left")
+    else:
+        ax.axis("off")
 
-    fig.suptitle("Fixed-C diagnostic (1 h local CPU): shared C is not the difference",
-                 fontsize=11)
+    fig.suptitle(
+        "Freezing per-dataset readout to true (C, b) breaks the Poisson collapse",
+        fontsize=11,
+    )
     fig.tight_layout(rect=[0, 0, 1, 0.95])
-    out = args.root / "fixed_C_summary.png"
+    out = args.root / args.out_name
     fig.savefig(out)
     plt.close(fig)
     print(f"wrote {out}")

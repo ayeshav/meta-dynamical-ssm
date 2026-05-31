@@ -358,6 +358,11 @@ def main():
                         help="Poisson only: share C, b across datasets so the "
                              "only per-dataset difference is omega. Uses "
                              "n_neurons_min for all datasets.")
+    parser.add_argument("--freeze-readout-to-true", action="store_true",
+                        help="Poisson only: copy the true generator (C, b) "
+                             "into each per-dataset PoissonLikelihood readout "
+                             "and disable gradients on them. Forces the model "
+                             "latent to match z_norm.")
     args = parser.parse_args()
 
     out_dir = args.out_dir
@@ -408,8 +413,33 @@ def main():
         alpha=args.alpha,
         likelihood=args.likelihood,
     ).to(device)
+
+    if args.freeze_readout_to_true:
+        if args.likelihood != "poisson":
+            raise ValueError("--freeze-readout-to-true only supports --likelihood poisson")
+        with torch.no_grad():
+            for ds in data.observations:
+                C_true = data.observation_matrices[ds].to(device)   # (n_obs, d_latent)
+                b_true = data.biases[ds].to(device).squeeze(0)       # (n_obs,)  type: ignore[attr-defined]
+                readout = model.adapters.likelihood[ds].readout
+                assert readout.weight.shape == C_true.shape, \
+                    f"shape mismatch {readout.weight.shape} vs {C_true.shape}"
+                assert readout.bias.shape == b_true.shape, \
+                    f"shape mismatch {readout.bias.shape} vs {b_true.shape}"
+                readout.weight.copy_(C_true)
+                readout.bias.copy_(b_true)
+                readout.weight.requires_grad = False
+                readout.bias.requires_grad = False
+        n_frozen = sum(
+            p.numel() for ds in data.observations
+            for p in model.adapters.likelihood[ds].readout.parameters()
+        )
+        print(f"froze {n_frozen:,} parameters in PoissonLikelihood readouts "
+              f"to ground-truth (C, b)")
+
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"model: {n_params:,} parameters on {device}")
+    print(f"model: {n_params:,} parameters on {device} ({n_trainable:,} trainable)")
 
     keys = list(data.observations.keys())
     per_step = args.per_step if args.per_step > 0 else len(keys)
@@ -425,7 +455,9 @@ def main():
             rng=random.Random(args.seed + 3),
         )
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(
+        (p for p in model.parameters() if p.requires_grad), lr=args.lr,
+    )
     batch_gen = torch.Generator(device=device)
     batch_gen.manual_seed(args.seed + 1)
 

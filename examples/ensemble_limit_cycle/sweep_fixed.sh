@@ -7,7 +7,7 @@ set -uo pipefail
 REPO_ROOT="${REPO_ROOT:-$(pwd)}"
 PYTHON="${PYTHON:-uv run --with torch --with numpy --with scipy --with matplotlib python}"
 ENTRY="$REPO_ROOT/examples/ensemble_limit_cycle/experiment.py"
-RESULTS_DIR="${RESULTS_DIR:-$REPO_ROOT/gcp_runs/local_fixed_obs/results}"
+RESULTS_DIR="${RESULTS_DIR:-$REPO_ROOT/gcp_runs/local_frozen_readout/results}"
 mkdir -p "$RESULTS_DIR"
 
 COMMON=(
@@ -33,8 +33,8 @@ COMMON=(
 
 # (name, extra_args)
 CONFIGS=(
-  "poisson_fixed_C   --fixed-obs"
-  "poisson_per_ds_C  "
+  "poisson_frozen_true  --freeze-readout-to-true"
+  "poisson_per_ds_C     "
 )
 
 SWEEP_LOG="$RESULTS_DIR/sweep.log"
