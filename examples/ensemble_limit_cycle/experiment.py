@@ -382,11 +382,13 @@ def main():
             num_ensemble=args.n,
             num_trials=args.num_trials,
             num_timepoints=args.num_timepoints,
+            obs_dim_range=(args.n_neurons_min, args.n_neurons_max),
             snr_db=args.snr_db,
             seed=args.seed,
             device=device,
         )
-        print(f"data: N={len(data.observations)} (gaussian), snr_db={data.snr_db}")
+        print(f"data: N={len(data.observations)} (gaussian, D_obs in "
+              f"[{args.n_neurons_min}, {args.n_neurons_max}]), snr_db={data.snr_db}")
     else:
         data = generate_ensemble_poisson(
             num_ensemble=args.n,
