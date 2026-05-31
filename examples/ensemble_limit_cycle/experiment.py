@@ -176,6 +176,65 @@ def collect_final(model, data) -> dict:
     return out
 
 
+def _gaussian_smooth_time(y: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Per-trial, per-neuron 1-D Gaussian smoothing along the time axis.
+
+    y has shape [B, T, N]. Returns same shape.
+    """
+    if sigma <= 0:
+        return y
+    radius = max(1, int(round(3 * sigma)))
+    t = torch.arange(-radius, radius + 1, dtype=y.dtype, device=y.device)
+    kernel = torch.exp(-0.5 * (t / sigma) ** 2)
+    kernel = kernel / kernel.sum()
+    # depthwise conv1d: input shape (B*N, 1, T)
+    B, T, N = y.shape
+    y_perm = y.permute(0, 2, 1).reshape(B * N, 1, T)
+    y_sm = torch.nn.functional.conv1d(
+        y_perm, kernel.view(1, 1, -1), padding=radius,
+    )
+    return y_sm.reshape(B, N, T).permute(0, 2, 1)
+
+
+def warm_start_C_sta(model, data, sigma_smooth: float = 2.0,
+                     latent_dim: int = 2, log_floor: float = 1e-3) -> None:
+    """Warm-start per-dataset PoissonLikelihood readouts from spike data alone.
+
+    Procedure per dataset:
+      1. Gaussian-smooth spike counts in time -> rate_hat(t).
+      2. PCA on log(rate_hat + floor) across neurons -> top-k latent estimate
+         z_hat in R^{latent_dim}.
+      3. Solve least squares for (C_hat, b_hat) such that
+         log(rate_hat) ~= C_hat @ z_hat + b_hat.
+      4. Copy into model.adapters.likelihood[ds].readout.{weight,bias}.
+
+    No oracle: z_hat comes from the spikes themselves.
+    """
+    print(f"\n[warm-start C/sta] sigma_smooth={sigma_smooth}, "
+          f"fitting per-dataset (C, b) from smoothed log-rates")
+    for ds in data.observations:
+        y = data.observations[ds]                              # [B, T, N]
+        y_smooth = _gaussian_smooth_time(y, sigma_smooth)
+        log_rate = torch.log(y_smooth + log_floor)              # [B, T, N]
+        log_rate_flat = log_rate.reshape(-1, log_rate.shape[-1])  # [B*T, N]
+        log_rate_mean = log_rate_flat.mean(0, keepdim=True)
+        L_centered = log_rate_flat - log_rate_mean              # [B*T, N]
+        # PCA across neurons; top-k latent estimate.
+        U, S, Vh = torch.linalg.svd(L_centered, full_matrices=False)
+        z_hat = U[:, :latent_dim] * S[:latent_dim]              # [B*T, k]
+        # Solve log_rate = C @ z + b.  Augment z with a column of ones for bias.
+        z_aug = torch.cat(
+            [z_hat, torch.ones(z_hat.shape[0], 1, device=z_hat.device, dtype=z_hat.dtype)],
+            dim=1,
+        )
+        sol = torch.linalg.lstsq(z_aug, log_rate_flat).solution  # [k+1, N]
+        C_init = sol[:latent_dim, :].T                          # [N, k]
+        b_init = sol[latent_dim, :]                             # [N]
+        readout = model.adapters.likelihood[ds].readout
+        readout.weight.data.copy_(C_init)
+        readout.bias.data.copy_(b_init)
+
+
 def warm_start_dynamics(model, data, num_steps: int, lr: float, batch: int,
                         rng: random.Random, log_every: int = 50) -> list[dict]:
     """Pre-train `model.dynamics` (no deltas) to fit one-step prediction on the
@@ -363,6 +422,22 @@ def main():
                              "into each per-dataset PoissonLikelihood readout "
                              "and disable gradients on them. Forces the model "
                              "latent to match z_norm.")
+    parser.add_argument("--warm-start-C", choices=("none", "oracle", "sta"),
+                        default="none",
+                        help="Poisson only: warm-start per-dataset "
+                             "PoissonLikelihood readouts (C, b). "
+                             "oracle = copy true generator (C, b), allow training. "
+                             "sta = fit (C, b) from PCA + linear regression on "
+                             "log-smoothed spikes (no oracle).")
+    parser.add_argument("--readout-lr-scale", type=float, default=1.0,
+                        help="Multiply --lr by this for per-dataset likelihood "
+                             "readout parameters. e.g. 0.1 = readout learns 10x "
+                             "slower than encoder/dynamics.")
+    parser.add_argument("--readout-weight-decay", type=float, default=0.0,
+                        help="Weight decay applied only to per-dataset "
+                             "likelihood readout parameters.")
+    parser.add_argument("--sta-smooth-sigma", type=float, default=2.0,
+                        help="Gaussian smoothing sigma (in bins) for STA warm-start.")
     args = parser.parse_args()
 
     out_dir = args.out_dir
@@ -439,6 +514,24 @@ def main():
         print(f"froze {n_frozen:,} parameters in PoissonLikelihood readouts "
               f"to ground-truth (C, b)")
 
+    if args.warm_start_C != "none":
+        if args.likelihood != "poisson":
+            raise ValueError("--warm-start-C only supports --likelihood poisson")
+        if args.freeze_readout_to_true:
+            raise ValueError("--warm-start-C and --freeze-readout-to-true are mutually exclusive")
+        with torch.no_grad():
+            if args.warm_start_C == "oracle":
+                for ds in data.observations:
+                    C_true = data.observation_matrices[ds].to(device)
+                    b_true = data.biases[ds].to(device).squeeze(0)
+                    readout = model.adapters.likelihood[ds].readout
+                    readout.weight.data.copy_(C_true)
+                    readout.bias.data.copy_(b_true)
+                print(f"warm-started readouts to ORACLE (C, b) [grads enabled]")
+            elif args.warm_start_C == "sta":
+                warm_start_C_sta(model, data, sigma_smooth=args.sta_smooth_sigma)
+                print(f"warm-started readouts via STA (PCA + lstsq) [grads enabled]")
+
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"model: {n_params:,} parameters on {device} ({n_trainable:,} trainable)")
@@ -457,9 +550,25 @@ def main():
             rng=random.Random(args.seed + 3),
         )
 
-    optimizer = torch.optim.AdamW(
-        (p for p in model.parameters() if p.requires_grad), lr=args.lr,
-    )
+    # Separate param groups so likelihood readouts can use a different lr and
+    # weight decay than the rest of the model. Identified by named module path.
+    readout_params, other_params = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if ".likelihood." in name and ".readout." in name:
+            readout_params.append(p)
+        else:
+            other_params.append(p)
+    optimizer = torch.optim.AdamW([
+        {"params": other_params, "lr": args.lr, "weight_decay": 0.0},
+        {"params": readout_params,
+         "lr": args.lr * args.readout_lr_scale,
+         "weight_decay": args.readout_weight_decay},
+    ])
+    print(f"optimizer: {len(other_params)} other params @ lr={args.lr}, "
+          f"{len(readout_params)} readout params @ lr={args.lr * args.readout_lr_scale} "
+          f"+ wd={args.readout_weight_decay}")
     batch_gen = torch.Generator(device=device)
     batch_gen.manual_seed(args.seed + 1)
 
