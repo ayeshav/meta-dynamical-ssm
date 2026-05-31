@@ -154,6 +154,7 @@ def generate_ensemble_poisson(
     stride: int = 3,
     seed: int = 20260528,
     device: str | torch.device = "cpu",
+    fixed_obs: bool = False,
 ) -> EnsembleData:
     """Per-dataset log-linear Poisson observations of a limit-cycle ensemble.
 
@@ -162,6 +163,11 @@ def generate_ensemble_poisson(
     library expects 2-D numpy (T, d_latent) inputs and returns
     (T, n_neurons) observations and rates; we concatenate across trials
     per dataset, call the lib, then reshape back to (B, T, n_neurons).
+
+    If `fixed_obs=True`, the loading matrix C and bias b are calibrated
+    once on dataset 0 and reused for every dataset. The only per-dataset
+    variation is then the dynamics (omega). `n_neurons` is forced to
+    `n_neurons_range[0]` across all datasets in this mode.
     """
     if latent_dim != 2:
         raise ValueError("LimitCycle requires latent_dim=2.")
@@ -180,13 +186,22 @@ def generate_ensemble_poisson(
         omegas_t,
     )
 
-    n_neurons_t = torch.randint(
-        n_neurons_range[0],
-        n_neurons_range[1] + 1,
-        (num_ensemble,),
-        generator=generator,
-        device=device,
-    )
+    if fixed_obs:
+        n_neurons_t = torch.full((num_ensemble,), n_neurons_range[0],
+                                 dtype=torch.long, device=device)
+    else:
+        n_neurons_t = torch.randint(
+            n_neurons_range[0],
+            n_neurons_range[1] + 1,
+            (num_ensemble,),
+            generator=generator,
+            device=device,
+        )
+
+    # Will be filled by the first iteration when fixed_obs=True, then reused.
+    shared_C_np = None
+    shared_b_np = None
+    shared_snr = None
 
     observations: dict[str, torch.Tensor] = {}
     latents: dict[str, torch.Tensor] = {}
@@ -227,28 +242,38 @@ def generate_ensemble_poisson(
         idx = np.linspace(0, x_flat.shape[0] - 1, n_calib).round().astype(int)
         x_calib = x_flat[idx]
 
-        # Pre-seed a sparse Gaussian C and pass it to
-        # gen_poisson_observations to skip the lib's initialize_C, which
-        # runs a 15000-iter coherence optimization that does not converge
-        # for d_latent=2 (in 2-D, max coherence over many vectors is 1).
-        np.random.seed(int(np_seed_state[i]))
-        C_init = np.random.randn(n_neurons, latent_dim)
-        mask = np.random.rand(n_neurons, latent_dim) > p_sparse
-        C_init = C_init * mask
-        C_init = C_init / (np.linalg.norm(C_init, axis=1, keepdims=True) + 1e-8)
+        if fixed_obs and shared_C_np is not None:
+            # Reuse the calibrated (C, b) from dataset 0.
+            C_np = shared_C_np
+            b_np = shared_b_np
+            snr_realized = shared_snr
+        else:
+            # Pre-seed a sparse Gaussian C and pass it to
+            # gen_poisson_observations to skip the lib's initialize_C, which
+            # runs a 15000-iter coherence optimization that does not converge
+            # for d_latent=2 (in 2-D, max coherence over many vectors is 1).
+            np.random.seed(int(np_seed_state[i]))
+            C_init = np.random.randn(n_neurons, latent_dim)
+            mask = np.random.rand(n_neurons, latent_dim) > p_sparse
+            C_init = C_init * mask
+            C_init = C_init / (np.linalg.norm(C_init, axis=1, keepdims=True) + 1e-8)
 
-        with contextlib.redirect_stdout(io.StringIO()):
-            _obs_cal, C_np, b_np, _rates_cal, snr_realized = gen_poisson_observations(
-                x=x_calib,
-                C=C_init,
-                d_neurons=n_neurons,
-                tgt_rate_per_bin=target_mean_rate,
-                max_rate_per_bin=target_max_rate,
-                priority=priority,
-                p_coh=p_coh,
-                p_sparse=p_sparse,
-                tgt_snr=target_snr_db,
-            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                _obs_cal, C_np, b_np, _rates_cal, snr_realized = gen_poisson_observations(
+                    x=x_calib,
+                    C=C_init,
+                    d_neurons=n_neurons,
+                    tgt_rate_per_bin=target_mean_rate,
+                    max_rate_per_bin=target_max_rate,
+                    priority=priority,
+                    p_coh=p_coh,
+                    p_sparse=p_sparse,
+                    tgt_snr=target_snr_db,
+                )
+            if fixed_obs:
+                shared_C_np = C_np
+                shared_b_np = b_np
+                shared_snr = snr_realized
         # Apply the calibrated (C, b) to ALL trial-time rows to get the
         # full per-bin observations.
         rates_full = np.exp(x_flat @ C_np.T + b_np)

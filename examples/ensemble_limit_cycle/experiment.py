@@ -354,6 +354,10 @@ def main():
     parser.add_argument("--warm-start-lr", type=float, default=1e-2)
     parser.add_argument("--warm-start-batch", type=int, default=64,
                         help="Trials per warm-start step (sampled per dataset).")
+    parser.add_argument("--fixed-obs", action="store_true",
+                        help="Poisson only: share C, b across datasets so the "
+                             "only per-dataset difference is omega. Uses "
+                             "n_neurons_min for all datasets.")
     args = parser.parse_args()
 
     out_dir = args.out_dir
@@ -389,6 +393,7 @@ def main():
             target_snr_db=args.snr_db,
             seed=args.seed,
             device=device,
+            fixed_obs=args.fixed_obs,
         )
         snrs = list(data.realized_snrs.values())  # type: ignore[attr-defined]
         print(f"data: N={len(data.observations)} (poisson), target_snr_db={data.snr_db}, "
