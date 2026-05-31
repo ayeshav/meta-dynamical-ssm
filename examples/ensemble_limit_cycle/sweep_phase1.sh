@@ -36,7 +36,7 @@ COMMON=(
 CONFIGS=(
   "P1_baseline    "
   "P1_oracle      --warm-start-C oracle"
-  "P1_sta         --warm-start-C sta"
+  "P1_pca         --warm-start-C pca"
   "P1_wd          --readout-weight-decay 1e-2"
   "P1_lrscale     --readout-lr-scale 0.1"
 )

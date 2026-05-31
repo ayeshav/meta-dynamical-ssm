@@ -196,9 +196,23 @@ def _gaussian_smooth_time(y: torch.Tensor, sigma: float) -> torch.Tensor:
     return y_sm.reshape(B, N, T).permute(0, 2, 1)
 
 
-def warm_start_C_sta(model, data, sigma_smooth: float = 2.0,
-                     latent_dim: int = 2, log_floor: float = 1e-3) -> None:
+def warm_start_C_pca(model, data, sigma_smooth: float = 2.0,
+                     latent_dim: int = 2, log_floor: float = 1e-3,
+                     normalize: bool = True) -> None:
     """Warm-start per-dataset PoissonLikelihood readouts from spike data alone.
+
+    This is the standard PLDS / GPFA-style initialization for the loading
+    matrix and bias of a log-linear Poisson state-space model.
+
+    References:
+      Macke, J. H., Buesing, L., Cunningham, J. P., Yu, B. M., Shenoy, K. V.,
+        & Sahani, M. (2011). Empirical models of spiking in neural
+        populations. NeurIPS. (PLDS, init via PCA on log-smoothed rates +
+        linear regression for (C, b).)
+      Yu, B. M., Cunningham, J. P., Santhanam, G., Ryu, S. I., Shenoy, K. V.,
+        & Sahani, M. (2009). Gaussian-process factor analysis for low-
+        dimensional single-trial analysis of neural population activity.
+        J. Neurophysiology. (GPFA, the PCA-on-smoothed-rates subroutine.)
 
     Procedure per dataset:
       1. Gaussian-smooth spike counts in time -> rate_hat(t).
@@ -206,12 +220,23 @@ def warm_start_C_sta(model, data, sigma_smooth: float = 2.0,
          z_hat in R^{latent_dim}.
       3. Solve least squares for (C_hat, b_hat) such that
          log(rate_hat) ~= C_hat @ z_hat + b_hat.
-      4. Copy into model.adapters.likelihood[ds].readout.{weight,bias}.
+      4. If normalize=True, rescale (z_hat, C_hat) so that the per-dim std
+         of z is 1 (matches the generator's z_norm convention; keeps the
+         model's working latent at unit scale per dim, which the dynamics
+         MLP expects). This is C' = C_hat * sigma, z' = z_hat / sigma,
+         which preserves the fitted log_rate exactly.
+      5. Copy (C', b_hat) into model.adapters.likelihood[ds].readout.
 
     No oracle: z_hat comes from the spikes themselves.
+
+    Caveat: PCA components are sign-ambiguous. For dynamics with a
+    sign-equivariance (limit cycle: omega <-> -omega gives the same
+    orbit), this is harmless. For asymmetric dynamics, half the
+    datasets may end up with the wrong-sign latent and the shared
+    dynamics MLP cannot recover via gradient descent.
     """
-    print(f"\n[warm-start C/sta] sigma_smooth={sigma_smooth}, "
-          f"fitting per-dataset (C, b) from smoothed log-rates")
+    print(f"\n[warm-start C/pca] sigma_smooth={sigma_smooth}, "
+          f"normalize={normalize}, fitting per-dataset (C, b) from smoothed log-rates")
     for ds in data.observations:
         y = data.observations[ds]                              # [B, T, N]
         y_smooth = _gaussian_smooth_time(y, sigma_smooth)
@@ -230,6 +255,10 @@ def warm_start_C_sta(model, data, sigma_smooth: float = 2.0,
         sol = torch.linalg.lstsq(z_aug, log_rate_flat).solution  # [k+1, N]
         C_init = sol[:latent_dim, :].T                          # [N, k]
         b_init = sol[latent_dim, :]                             # [N]
+        if normalize:
+            sigma = z_hat.std(dim=0, unbiased=False)            # [k]
+            sigma = sigma.clamp_min(1e-8)
+            C_init = C_init * sigma                              # absorb scale into C
         readout = model.adapters.likelihood[ds].readout
         readout.weight.data.copy_(C_init)
         readout.bias.data.copy_(b_init)
@@ -422,13 +451,14 @@ def main():
                              "into each per-dataset PoissonLikelihood readout "
                              "and disable gradients on them. Forces the model "
                              "latent to match z_norm.")
-    parser.add_argument("--warm-start-C", choices=("none", "oracle", "sta"),
+    parser.add_argument("--warm-start-C", choices=("none", "oracle", "pca"),
                         default="none",
                         help="Poisson only: warm-start per-dataset "
                              "PoissonLikelihood readouts (C, b). "
-                             "oracle = copy true generator (C, b), allow training. "
-                             "sta = fit (C, b) from PCA + linear regression on "
-                             "log-smoothed spikes (no oracle).")
+                             "oracle = copy true generator (C, b), allow training "
+                             "(uses ground truth, diagnostic only). "
+                             "pca = fit (C, b) from PCA + linear regression on "
+                             "log-smoothed spikes (data only, no oracle).")
     parser.add_argument("--readout-lr-scale", type=float, default=1.0,
                         help="Multiply --lr by this for per-dataset likelihood "
                              "readout parameters. e.g. 0.1 = readout learns 10x "
@@ -436,8 +466,8 @@ def main():
     parser.add_argument("--readout-weight-decay", type=float, default=0.0,
                         help="Weight decay applied only to per-dataset "
                              "likelihood readout parameters.")
-    parser.add_argument("--sta-smooth-sigma", type=float, default=2.0,
-                        help="Gaussian smoothing sigma (in bins) for STA warm-start.")
+    parser.add_argument("--pca-smooth-sigma", type=float, default=2.0,
+                        help="Gaussian smoothing sigma (in bins) for PCA warm-start.")
     args = parser.parse_args()
 
     out_dir = args.out_dir
@@ -528,9 +558,9 @@ def main():
                     readout.weight.data.copy_(C_true)
                     readout.bias.data.copy_(b_true)
                 print(f"warm-started readouts to ORACLE (C, b) [grads enabled]")
-            elif args.warm_start_C == "sta":
-                warm_start_C_sta(model, data, sigma_smooth=args.sta_smooth_sigma)
-                print(f"warm-started readouts via STA (PCA + lstsq) [grads enabled]")
+            elif args.warm_start_C == "pca":
+                warm_start_C_pca(model, data, sigma_smooth=args.pca_smooth_sigma)
+                print(f"warm-started readouts via PCA + lstsq (data only) [grads enabled]")
 
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_params = sum(p.numel() for p in model.parameters())

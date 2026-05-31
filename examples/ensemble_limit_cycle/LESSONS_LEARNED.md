@@ -76,10 +76,47 @@ Recommended setup: T_eff >= 500 (5 s @ 10 ms bins).
   the per-dataset readout is anchored.
 - **High firing rate** (D2) gets ~half the way back. Confirms the
   low-rate gradient pathology is real.
-- **Untried but promising** (next experiment): per-dataset readout
-  warm-start from data alone (spike-triggered linear regression on
-  PCA-projected smoothed spikes), plus weight decay and/or smaller
-  learning rate on the readout.
+- **PCA warm-start on (C, b) per dataset, from data alone** (no
+  oracle). PFA / PLDS / GPFA-style: Gaussian-smooth spikes in time,
+  log-transform, PCA across neurons, least-squares fit (C, b). At
+  small scale this matches the oracle warm-start within seed noise
+  (R^2 = 0.94, |omega|-rho = 0.98 vs oracle's 0.997). After fitting,
+  rescale (C, b) so the latent has unit variance per dim, matching
+  the dynamics MLP's working scale. References: Macke et al. NeurIPS
+  2011 (PLDS init); Yu et al. J Neurophysiol 2009 (GPFA, the
+  PCA-on-smoothed-rates subroutine).
+
+### Caveat - sign-flip ambiguity
+
+PCA principal components are sign-ambiguous: PC1 and -PC1 are both
+valid. After warm-start, each dataset's latent may be sign-flipped
+along any subset of latent dimensions, with no way to disambiguate
+from data alone (each per-dataset latent space is its own).
+
+For the limit cycle this is harmless: omega <-> -omega gives the
+same orbit (rotational symmetry), so a per-dataset sign flip just
+maps to a per-dataset omega-sign flip in the embedding, which is
+already a rotation-invariance of the architecture (see the Gaussian
+sweep that recovered |omega| at rho = 0.99 but not signed omega).
+
+For general dynamics (asymmetric oscillators, fixed-point systems,
+non-symmetric flows) the sign-flip is a discontinuous nuisance. The
+shared dynamics MLP would have to learn the right and the sign-flipped
+versions simultaneously, and gradient descent cannot bridge the
+discontinuity. **The PCA warm-start trick is therefore not a general
+fix; it is leveraging the limit-cycle symmetry here.** For non-
+symmetric problems, a sign-disambiguation step would be needed
+(e.g., align the sign of the second moment of dz/dt, or use a
+manifold-preserving alignment to a canonical dataset's PCs).
+
+### One-axis ablation, no combinations
+
+Phase 1 tested each knob (`--warm-start-C oracle`, `--warm-start-C pca`,
+`--readout-weight-decay 1e-2`, `--readout-lr-scale 0.1`) versus a
+no-intervention baseline. Weight decay alone and lr scale alone do not
+help. The Phase 2 cross of {warm-start} x {wd, lr-scale, both} was
+proposed in STRATEGY.md but skipped because PCA warm-start alone
+already hit the success criterion.
 
 ## The biggest single insight
 
