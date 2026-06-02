@@ -176,94 +176,6 @@ def collect_final(model, data) -> dict:
     return out
 
 
-def _gaussian_smooth_time(y: torch.Tensor, sigma: float) -> torch.Tensor:
-    """Per-trial, per-neuron 1-D Gaussian smoothing along the time axis.
-
-    y has shape [B, T, N]. Returns same shape.
-    """
-    if sigma <= 0:
-        return y
-    radius = max(1, int(round(3 * sigma)))
-    t = torch.arange(-radius, radius + 1, dtype=y.dtype, device=y.device)
-    kernel = torch.exp(-0.5 * (t / sigma) ** 2)
-    kernel = kernel / kernel.sum()
-    # depthwise conv1d: input shape (B*N, 1, T)
-    B, T, N = y.shape
-    y_perm = y.permute(0, 2, 1).reshape(B * N, 1, T)
-    y_sm = torch.nn.functional.conv1d(
-        y_perm, kernel.view(1, 1, -1), padding=radius,
-    )
-    return y_sm.reshape(B, N, T).permute(0, 2, 1)
-
-
-def warm_start_C_pca(model, data, sigma_smooth: float = 2.0,
-                     latent_dim: int = 2, log_floor: float = 1e-3,
-                     normalize: bool = True) -> None:
-    """Warm-start per-dataset PoissonLikelihood readouts from spike data alone.
-
-    This is the standard PLDS / GPFA-style initialization for the loading
-    matrix and bias of a log-linear Poisson state-space model.
-
-    References:
-      Macke, J. H., Buesing, L., Cunningham, J. P., Yu, B. M., Shenoy, K. V.,
-        & Sahani, M. (2011). Empirical models of spiking in neural
-        populations. NeurIPS. (PLDS, init via PCA on log-smoothed rates +
-        linear regression for (C, b).)
-      Yu, B. M., Cunningham, J. P., Santhanam, G., Ryu, S. I., Shenoy, K. V.,
-        & Sahani, M. (2009). Gaussian-process factor analysis for low-
-        dimensional single-trial analysis of neural population activity.
-        J. Neurophysiology. (GPFA, the PCA-on-smoothed-rates subroutine.)
-
-    Procedure per dataset:
-      1. Gaussian-smooth spike counts in time -> rate_hat(t).
-      2. PCA on log(rate_hat + floor) across neurons -> top-k latent estimate
-         z_hat in R^{latent_dim}.
-      3. Solve least squares for (C_hat, b_hat) such that
-         log(rate_hat) ~= C_hat @ z_hat + b_hat.
-      4. If normalize=True, rescale (z_hat, C_hat) so that the per-dim std
-         of z is 1 (matches the generator's z_norm convention; keeps the
-         model's working latent at unit scale per dim, which the dynamics
-         MLP expects). This is C' = C_hat * sigma, z' = z_hat / sigma,
-         which preserves the fitted log_rate exactly.
-      5. Copy (C', b_hat) into model.adapters.likelihood[ds].readout.
-
-    No oracle: z_hat comes from the spikes themselves.
-
-    Caveat: PCA components are sign-ambiguous. For dynamics with a
-    sign-equivariance (limit cycle: omega <-> -omega gives the same
-    orbit), this is harmless. For asymmetric dynamics, half the
-    datasets may end up with the wrong-sign latent and the shared
-    dynamics MLP cannot recover via gradient descent.
-    """
-    print(f"\n[warm-start C/pca] sigma_smooth={sigma_smooth}, "
-          f"normalize={normalize}, fitting per-dataset (C, b) from smoothed log-rates")
-    for ds in data.observations:
-        y = data.observations[ds]                              # [B, T, N]
-        y_smooth = _gaussian_smooth_time(y, sigma_smooth)
-        log_rate = torch.log(y_smooth + log_floor)              # [B, T, N]
-        log_rate_flat = log_rate.reshape(-1, log_rate.shape[-1])  # [B*T, N]
-        log_rate_mean = log_rate_flat.mean(0, keepdim=True)
-        L_centered = log_rate_flat - log_rate_mean              # [B*T, N]
-        # PCA across neurons; top-k latent estimate.
-        U, S, Vh = torch.linalg.svd(L_centered, full_matrices=False)
-        z_hat = U[:, :latent_dim] * S[:latent_dim]              # [B*T, k]
-        # Solve log_rate = C @ z + b.  Augment z with a column of ones for bias.
-        z_aug = torch.cat(
-            [z_hat, torch.ones(z_hat.shape[0], 1, device=z_hat.device, dtype=z_hat.dtype)],
-            dim=1,
-        )
-        sol = torch.linalg.lstsq(z_aug, log_rate_flat).solution  # [k+1, N]
-        C_init = sol[:latent_dim, :].T                          # [N, k]
-        b_init = sol[latent_dim, :]                             # [N]
-        if normalize:
-            sigma = z_hat.std(dim=0, unbiased=False)            # [k]
-            sigma = sigma.clamp_min(1e-8)
-            C_init = C_init * sigma                              # absorb scale into C
-        readout = model.adapters.likelihood[ds].readout
-        readout.weight.data.copy_(C_init)
-        readout.bias.data.copy_(b_init)
-
-
 def warm_start_dynamics(model, data, num_steps: int, lr: float, batch: int,
                         rng: random.Random, log_every: int = 50) -> list[dict]:
     """Pre-train `model.dynamics` (no deltas) to fit one-step prediction on the
@@ -559,8 +471,11 @@ def main():
                     readout.bias.data.copy_(b_true)
                 print(f"warm-started readouts to ORACLE (C, b) [grads enabled]")
             elif args.warm_start_C == "pca":
-                warm_start_C_pca(model, data, sigma_smooth=args.pca_smooth_sigma)
-                print(f"warm-started readouts via PCA + lstsq (data only) [grads enabled]")
+                n = model.adapters.init_likelihoods_from_data(
+                    data.observations, sigma_smooth=args.pca_smooth_sigma,
+                )
+                print(f"warm-started {n} PoissonLikelihood readouts via PCA + lstsq "
+                      f"(data only) [grads enabled]")
 
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_params = sum(p.numel() for p in model.parameters())
