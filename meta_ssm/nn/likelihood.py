@@ -67,6 +67,16 @@ def _pca_lstsq_loading(
     y_smooth = _gaussian_smooth_time(y, sigma_smooth)
     log_rate = torch.log(y_smooth + log_floor)
     log_rate_flat = log_rate.reshape(-1, log_rate.shape[-1])
+    n_samples, n_neurons = log_rate_flat.shape
+    max_components = min(n_samples, n_neurons)
+    if latent_dim > max_components:
+        raise ValueError(
+            f"latent_dim={latent_dim} exceeds the number of identifiable "
+            f"principal components ({max_components} = min(B*T={n_samples}, "
+            f"N={n_neurons})). The Poisson readout asks for more latent dims "
+            "than the data can support; reduce latent_dim or supply more "
+            "neurons/timepoints."
+        )
     L_centered = log_rate_flat - log_rate_flat.mean(0, keepdim=True)
     U, S, _Vh = torch.linalg.svd(L_centered, full_matrices=False)
     z_hat = U[:, :latent_dim] * S[:latent_dim]
@@ -154,9 +164,7 @@ class PoissonLikelihood(Likelihood):
     Joint Poisson + latent-VAE optimization from a random readout init
     is prone to a "predict mean rate via bias alone" collapse. Calling
     `init_from_data(y)` once, before training, with the dataset's spike
-    counts fixes this. See
-    `examples/ensemble_limit_cycle/LESSONS_LEARNED.md` for the diagnosis
-    journey that led to this default.
+    counts fixes this.
     """
 
     def __init__(
@@ -219,8 +227,7 @@ class PoissonLikelihood(Likelihood):
                 "rate via bias alone' solution. Call "
                 "`PoissonLikelihood.init_from_data(y)` before training, "
                 "or use `Adapters.init_likelihoods_from_data(observations)` "
-                "to initialize all Poisson readouts at once. See "
-                "examples/ensemble_limit_cycle/LESSONS_LEARNED.md.",
+                "to initialize all Poisson readouts at once.",
                 UserWarning,
                 stacklevel=2,
             )
