@@ -1,3 +1,4 @@
+import functools
 import warnings
 
 import torch
@@ -154,6 +155,22 @@ class GaussianLikelihood(Likelihood):
         return torch.sum(log_likelihood, (-1, -2))
 
     
+def exp_rate(raw: torch.Tensor, log_rate_clamp: float = 8.0) -> torch.Tensor:
+    """Log-linear Poisson rate: lambda = exp(raw).
+
+    Clamps before exp for numerical stability (overflow).
+    """
+    return torch.exp(raw.clamp(max=log_rate_clamp)) + EPS
+
+
+def softplus_rate(raw: torch.Tensor) -> torch.Tensor:
+    """Softplus Poisson rate: lambda = softplus(raw).
+
+    No clamp needed: softplus is ~linear in the tail.
+    """
+    return F.softplus(raw) + EPS
+
+
 class PoissonLikelihood(Likelihood):
     """Poisson observations with a configurable rate link.
 
@@ -185,10 +202,17 @@ class PoissonLikelihood(Likelihood):
             link: str = "exp",
     ):
         super().__init__(num_latents, num_observations, linear, dim_hidden)
-        if link not in ("exp", "softplus"):
-            raise ValueError(f"link must be 'exp' or 'softplus', got {link!r}")
         self.link = link
         self.log_rate_clamp = log_rate_clamp
+        # The configured link as a function, resolved once (forward runs every
+        # step, so it must not branch on the link string per call). Public:
+        # call `self.rate(raw)` to apply the same link in eval/reconstruction.
+        if link == "exp":
+            self.rate = functools.partial(exp_rate, log_rate_clamp=log_rate_clamp)
+        elif link == "softplus":
+            self.rate = softplus_rate
+        else:
+            raise ValueError(f"link must be 'exp' or 'softplus', got {link!r}")
         # Tracks whether the user warm-started the readout from data.
         # Used only to emit a one-time UserWarning on the first forward
         # pass when this has not been done.
@@ -230,17 +254,6 @@ class PoissonLikelihood(Likelihood):
             self.readout.bias.copy_(b)
         self._initialized_from_data = True
 
-    def mean_rate(self, raw: torch.Tensor) -> torch.Tensor:
-        """Map raw readout output to the Poisson rate lambda via the chosen link.
-
-        Defined in one place so forward and any evaluation/reconstruction
-        code share it. The exp branch clamps before exp (overflow);
-        softplus is ~linear in the tail so needs no clamp.
-        """
-        if self.link == "exp":
-            return torch.exp(raw.clamp(max=self.log_rate_clamp)) + EPS
-        return F.softplus(raw) + EPS
-
     def forward(self, z, y):
         if not self._initialized_from_data and not self._warned_uninitialized:
             warnings.warn(
@@ -256,7 +269,7 @@ class PoissonLikelihood(Likelihood):
             )
             self._warned_uninitialized = True
 
-        rates = self.mean_rate(self.get_mean_output(z))
+        rates = self.rate(self.get_mean_output(z))
 
         log_likelihood = Poisson(rates).log_prob(y)
 

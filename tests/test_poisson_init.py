@@ -67,20 +67,31 @@ def test_default_link_is_exp_and_byte_identical():
     assert lik.link == "exp"
     raw = lik.get_mean_output(z)
     expected = torch.exp(raw.clamp(max=lik.log_rate_clamp)) + EPS
-    assert torch.equal(lik.mean_rate(raw), expected)
+    assert torch.equal(lik.rate(raw), expected)
 
 
-def test_softplus_link_mean_rate():
+def test_softplus_link_rate():
     y, z, _, _ = _poisson_data()
     lik = PoissonLikelihood(num_latents=DZ, num_observations=N, link="softplus")
     assert lik.link == "softplus"
     raw = lik.get_mean_output(z)
-    assert torch.equal(lik.mean_rate(raw), F.softplus(raw) + EPS)
+    assert torch.equal(lik.rate(raw), F.softplus(raw) + EPS)
 
 
 def test_invalid_link_raises():
     with pytest.raises(ValueError, match="link must be"):
         PoissonLikelihood(num_latents=DZ, num_observations=N, link="relu")
+
+
+def test_rate_functions_are_public():
+    """exp_rate / softplus_rate are part of the public API (importable, usable)."""
+    from meta_ssm.nn import exp_rate, softplus_rate  # exported from the package
+    raw = torch.randn(4, 5)
+    assert torch.equal(exp_rate(raw, 8.0), torch.exp(raw.clamp(max=8.0)) + EPS)
+    assert torch.equal(softplus_rate(raw), F.softplus(raw) + EPS)
+    # they are genuinely different links (differ at raw=0: 1.0 vs log(2))
+    z = torch.zeros(())
+    assert not torch.equal(exp_rate(z), softplus_rate(z))
 
 
 def test_forward_finite_for_both_links():

@@ -5,4 +5,10 @@ from .inference_networks import (LatentDynamicsEncoderDKF,
                                  EmbeddingEncoder,
                                  ReadinNetwork,
                                  ReadinShared)
-from .likelihood import GaussianLikelihood, PoissonLikelihood, ReadoutShared
+from .likelihood import (
+    GaussianLikelihood,
+    PoissonLikelihood,
+    ReadoutShared,
+    exp_rate,
+    softplus_rate,
+)
