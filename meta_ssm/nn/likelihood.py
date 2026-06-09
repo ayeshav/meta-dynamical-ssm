@@ -155,11 +155,19 @@ class GaussianLikelihood(Likelihood):
 
     
 class PoissonLikelihood(Likelihood):
-    """Log-linear Poisson: lambda = exp(C z + b), matching the generative model.
+    """Poisson observations with a configurable rate link.
+
+    Default `link="exp"` is the log-linear model lambda = exp(C z + b),
+    matching the generative model and the PCA/lstsq warm-start.
+    `link="softplus"` (lambda = softplus(C z + b)) is available as an
+    alternative. An empirical link-mismatch study found the two give
+    statistically indistinguishable results, so `exp` is the default for
+    consistency with the generative model and the warm-start (which fits
+    `(C, b)` for `log lambda = C z + b`).
 
     `self.readout` is `nn.Linear(num_latents, num_observations)`, which
-    learns both the loading matrix C and the per-neuron bias b. The
-    log-rate is clamped before exp for numerical stability.
+    learns both the loading matrix C and the per-neuron bias b. Under the
+    exp link the log-rate is clamped before exp for numerical stability.
 
     Joint Poisson + latent-VAE optimization from a random readout init
     is prone to a "predict mean rate via bias alone" collapse. Calling
@@ -174,8 +182,12 @@ class PoissonLikelihood(Likelihood):
             linear: bool = True,
             dim_hidden: int = 128,
             log_rate_clamp: float = 8.0,
+            link: str = "exp",
     ):
         super().__init__(num_latents, num_observations, linear, dim_hidden)
+        if link not in ("exp", "softplus"):
+            raise ValueError(f"link must be 'exp' or 'softplus', got {link!r}")
+        self.link = link
         self.log_rate_clamp = log_rate_clamp
         # Tracks whether the user warm-started the readout from data.
         # Used only to emit a one-time UserWarning on the first forward
@@ -218,6 +230,17 @@ class PoissonLikelihood(Likelihood):
             self.readout.bias.copy_(b)
         self._initialized_from_data = True
 
+    def mean_rate(self, raw: torch.Tensor) -> torch.Tensor:
+        """Map raw readout output to the Poisson rate lambda via the chosen link.
+
+        Defined in one place so forward and any evaluation/reconstruction
+        code share it. The exp branch clamps before exp (overflow);
+        softplus is ~linear in the tail so needs no clamp.
+        """
+        if self.link == "exp":
+            return torch.exp(raw.clamp(max=self.log_rate_clamp)) + EPS
+        return F.softplus(raw) + EPS
+
     def forward(self, z, y):
         if not self._initialized_from_data and not self._warned_uninitialized:
             warnings.warn(
@@ -233,8 +256,7 @@ class PoissonLikelihood(Likelihood):
             )
             self._warned_uninitialized = True
 
-        log_rates = self.get_mean_output(z).clamp(max=self.log_rate_clamp)
-        rates = torch.exp(log_rates) + EPS
+        rates = self.mean_rate(self.get_mean_output(z))
 
         log_likelihood = Poisson(rates).log_prob(y)
 

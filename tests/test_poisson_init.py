@@ -9,9 +9,11 @@ from functools import partial
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from meta_ssm.nn.adapter import Adapters
 from meta_ssm.nn.likelihood import (
+    EPS,
     GaussianLikelihood,
     PoissonLikelihood,
     _pca_lstsq_loading,
@@ -56,6 +58,38 @@ def test_init_from_data_sets_readout_and_flag():
     assert lik._initialized_from_data is True
     assert lik.readout.weight.shape == (N, DZ)
     assert lik.readout.bias.shape == (N,)
+
+
+def test_default_link_is_exp_and_byte_identical():
+    """Default link must reproduce the original exp formula exactly."""
+    y, z, _, _ = _poisson_data()
+    lik = PoissonLikelihood(num_latents=DZ, num_observations=N)
+    assert lik.link == "exp"
+    raw = lik.get_mean_output(z)
+    expected = torch.exp(raw.clamp(max=lik.log_rate_clamp)) + EPS
+    assert torch.equal(lik.mean_rate(raw), expected)
+
+
+def test_softplus_link_mean_rate():
+    y, z, _, _ = _poisson_data()
+    lik = PoissonLikelihood(num_latents=DZ, num_observations=N, link="softplus")
+    assert lik.link == "softplus"
+    raw = lik.get_mean_output(z)
+    assert torch.equal(lik.mean_rate(raw), F.softplus(raw) + EPS)
+
+
+def test_invalid_link_raises():
+    with pytest.raises(ValueError, match="link must be"):
+        PoissonLikelihood(num_latents=DZ, num_observations=N, link="relu")
+
+
+def test_forward_finite_for_both_links():
+    y, z, _, _ = _poisson_data()
+    for link in ("exp", "softplus"):
+        lik = PoissonLikelihood(num_latents=DZ, num_observations=N, link=link)
+        lik.init_from_data(y)
+        out = lik(z, y)
+        assert torch.isfinite(out).all(), link
 
 
 def test_forward_after_init_no_warning_finite_loss():
