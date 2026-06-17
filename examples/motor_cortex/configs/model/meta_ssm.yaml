@@ -1,0 +1,75 @@
+# @package _global_
+
+hparams:
+  # Motor cortex has richer dynamics than limit cycle; more latents + wider net.
+  num_latents: 24
+  width: 128
+  hidden_layers: 2
+  # dim_y_bar must accommodate the largest session (353 neurons in CO).
+  # A linear readin from N -> 128 compresses before the shared projection.
+  dim_y_bar: 128
+  dim_shared: 64
+  dim_embedding: 2
+  rank: 6
+  dropout: 0.1
+  linear_readin: true
+  adapt_layers: [0, 1]
+
+model:
+  _target_: meta_ssm.model.MetaDynamicalSSM
+
+  alpha: 1
+  concat_embedding: true
+  common_init_condition: true
+
+  adapters:
+    _target_: meta_ssm.nn.Adapters
+
+    readin_modules:
+      _target_: meta_ssm.nn.ReadinNetwork
+      _partial_: true
+      dim_y_bar: ${hparams.dim_y_bar}
+      linear: ${hparams.linear_readin}
+
+    likelihood_modules:
+      _target_: meta_ssm.nn.GaussianLikelihood
+      _partial_: true
+      num_latents: ${hparams.num_latents}
+
+  shared_readin:
+    _target_: meta_ssm.nn.ReadinShared
+    dim_y_bar: ${hparams.dim_y_bar}
+    dim_shared: ${hparams.dim_shared}
+
+  shared_readout:
+    _target_: torch.nn.Identity
+
+  latent_encoder:
+    _target_: meta_ssm.nn.LatentDynamicsEncoderDKF
+    num_latents: ${hparams.num_latents}
+    dim_shared: ${hparams.dim_shared}
+    dim_embedding: ${hparams.dim_embedding}
+    dim_hidden: ${hparams.width}
+
+  embedding_encoder:
+    _target_: meta_ssm.nn.EmbeddingEncoder
+    dim_embedding: ${hparams.dim_embedding}
+    dim_in: ${hparams.dim_shared}
+    dim_hidden: ${hparams.width}
+
+  hypernetwork:
+    _target_: meta_ssm.nn.LoRAHypernet
+    dim_embedding: ${hparams.dim_embedding}
+    num_latents: ${hparams.num_latents}
+    width_dynamics: ${hparams.width}
+    hidden_layers: ${hparams.hidden_layers}
+    adapt_layers: ${hparams.adapt_layers}
+    rank: ${hparams.rank}
+    width: ${hparams.width}
+
+  dynamics:
+    _target_: meta_ssm.nn.MlpDynamics
+    num_latents: ${hparams.num_latents}
+    hidden_layers: ${hparams.hidden_layers}
+    width: ${hparams.width}
+    adapt_layers: ${hparams.adapt_layers}

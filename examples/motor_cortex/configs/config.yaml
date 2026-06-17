@@ -1,0 +1,39 @@
+defaults:
+  - model: meta_ssm
+  - _self_
+
+seed: 42
+device: cpu
+
+data:
+  co_path: ${hydra:runtime.cwd}/examples/motor_cortex/datasets/centre_out_reaching/processed/centre_out_move_begins_time_update.pt
+  maze_path: ${hydra:runtime.cwd}/examples/motor_cortex/datasets/maze/processed/maze_move_begins_time_updated.pt
+  # tasks to include; remove either entry to train on a single task
+  tasks: [centre_out, maze]
+  # CO: only train on these subjects; J and T are unseen-subject test sets
+  co_train_subjects: [C, M]
+  # fraction of each subject's sessions (chronologically last) held out for within-subject eval
+  co_val_fraction: 0.2
+  # minimum cross-validated R² (rates -> velocity) to include a session
+  decode_r2_threshold: 0.1
+  n_decode_folds: 5
+  # electrode stability: fraction of mean rate the population drifts over the session
+  # and coefficient of variation of per-trial mean rates. Tune by inspecting the
+  # drift/cv values printed at startup; unstable maze sessions typically show drift > 0.5.
+  max_rate_drift: 0.4
+  max_rate_cv: 0.4
+
+training:
+  batch_size: 32
+  n_sessions_per_step: 30
+  steps: 2000
+  lr: 0.001
+  p_mask: 0.2
+  log_every: 100
+  output_dir: .
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    chdir: true
