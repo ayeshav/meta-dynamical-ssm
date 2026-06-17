@@ -42,30 +42,53 @@ def _instability_score(rates: torch.Tensor) -> dict[str, float]:
     return {"drift": drift, "cv": cv}
 
 
-def _decode_r2(rates: torch.Tensor, velocity: torch.Tensor, n_folds: int = 5) -> float:
-    """5-fold cross-validated ridge R² from time-averaged rates → velocity."""
-    X = rates.mean(1).numpy().astype(np.float64)    # [n_trials, n_neurons]
-    Y = velocity.mean(1).numpy().astype(np.float64) # [n_trials, 2]
-    n = len(X)
-    fold_size = max(1, n // n_folds)
+def _decode_r2(
+    rates: torch.Tensor,
+    velocity: torch.Tensor,
+    n_folds: int = 5,
+    *,
+    start_bin: int = 12,
+    alpha: float = 0.01,
+) -> float:
+    """Notebook-style Ridge R² from rates → velocity.
 
-    r2_folds = []
-    for f in range(n_folds):
-        val_start, val_end = f * fold_size, min((f + 1) * fold_size, n)
-        mask = np.ones(n, dtype=bool)
-        mask[val_start:val_end] = False
-        X_tr, Y_tr = X[mask], Y[mask]
-        X_val, Y_val = X[~mask], Y[~mask]
-        if len(X_val) == 0:
-            continue
-        lam = 1.0
-        W = np.linalg.solve(X_tr.T @ X_tr + lam * np.eye(X_tr.shape[1]), X_tr.T @ Y_tr)
-        Y_pred = X_val @ W
-        ss_res = np.sum((Y_val - Y_pred) ** 2)
-        ss_tot = np.sum((Y_val - Y_val.mean(0, keepdims=True)) ** 2)
-        r2_folds.append(1.0 - ss_res / (ss_tot + 1e-12))
+    Uses the first 80% of trials for training and the final 20% for validation,
+    discards bins before `start_bin`, then flattens trials and time bins before
+    fitting a Ridge decoder. `n_folds` is kept for config/API compatibility.
+    """
+    del n_folds
 
-    return float(np.mean(r2_folds)) if r2_folds else float("-inf")
+    if rates.ndim != 3 or velocity.ndim != 3 or rates.shape[:2] != velocity.shape[:2]:
+        return float("-inf")
+
+    n_trials, n_bins, n_neurons = rates.shape
+    if n_trials < 2 or n_bins <= start_bin or n_neurons == 0:
+        return float("-inf")
+
+    split = int(n_trials * 0.8)
+    if split <= 0 or split >= n_trials:
+        return float("-inf")
+
+    X_train = rates[:split, start_bin:].reshape(-1, n_neurons).numpy().astype(np.float64)
+    Y_train = velocity[:split, start_bin:].reshape(-1, 2).numpy().astype(np.float64)
+    X_val = rates[split:, start_bin:].reshape(-1, n_neurons).numpy().astype(np.float64)
+    Y_val = velocity[split:, start_bin:].reshape(-1, 2).numpy().astype(np.float64)
+
+    if len(X_train) == 0 or len(X_val) == 0:
+        return float("-inf")
+
+    # Match sklearn Ridge's default intercept by centering on the training set.
+    x_mean = X_train.mean(axis=0, keepdims=True)
+    y_mean = Y_train.mean(axis=0, keepdims=True)
+    Xc = X_train - x_mean
+    Yc = Y_train - y_mean
+
+    W = np.linalg.solve(Xc.T @ Xc + alpha * np.eye(n_neurons), Xc.T @ Yc)
+    Y_pred = (X_val - x_mean) @ W + y_mean
+
+    ss_res = np.sum((Y_val - Y_pred) ** 2)
+    ss_tot = np.sum((Y_val - Y_val.mean(axis=0, keepdims=True)) ** 2)
+    return float(1.0 - ss_res / (ss_tot + 1e-12))
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +121,7 @@ def _load_co_sessions(
     max_rate_drift: float,
     max_rate_cv: float,
 ) -> tuple[dict, dict, dict, dict, dict]:
-    """Load CO sessions, filter by subject, R², and rate stability; split train/val chronologically."""
+    """Load CO sessions, filter by subject, held-out R², and rate stability; split train/val chronologically."""
     raw = torch.load(path, map_location="cpu", weights_only=False)
 
     # Score all sessions first
@@ -211,8 +234,8 @@ def load_motor_cortex_data(
     Maze sessions:
       - All passing R² and stability thresholds go to train; no held-out split.
 
-    Both tasks filtered by cross-validated ridge R² (rates → velocity) and
-    firing-rate stability across trials (drift and CV thresholds).
+    Both tasks filtered by notebook-style held-out ridge R² (rates → velocity)
+    and firing-rate stability across trials (drift and CV thresholds).
     """
     if co_train_subjects is None:
         co_train_subjects = ["C", "M", "J", "T"]

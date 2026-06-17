@@ -14,8 +14,9 @@ data:
   co_train_subjects: [C, M]
   # fraction of each subject's sessions (chronologically last) held out for within-subject eval
   co_val_fraction: 0.2
-  # minimum cross-validated R² (rates -> velocity) to include a session
-  decode_r2_threshold: 0.1
+  # minimum notebook-style held-out R² (rates -> velocity) to include a session
+  decode_r2_threshold: 0.6
+  # kept for loader API compatibility; ignored by the notebook-style decoder
   n_decode_folds: 5
   # electrode stability: fraction of mean rate the population drifts over the session
   # and coefficient of variation of per-trial mean rates. Tune by inspecting the
