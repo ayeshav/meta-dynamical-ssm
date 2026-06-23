@@ -1,0 +1,15 @@
+hydra-core==1.3.2
+matplotlib==3.10.9
+numpy==1.26.4
+omegaconf==2.3.0
+pandas==2.3.3
+scipy==1.15.3
+torch==2.2.2
+
+# Notebook support used by the example notebooks.
+jupyter==1.1.1
+
+dandi
+pynwb
+scikit-learn
+tqdm
